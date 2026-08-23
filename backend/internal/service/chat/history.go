@@ -194,8 +194,10 @@ func (s *Service) EditMessage(
 	if err != nil {
 		return EditMessageResult{}, err
 	}
+	sourceProviderConversationID := source.ProviderConversationID()
 	var providerConversationID string
 	var provider ports.ChatConversation
+	var boundProvider ports.ChatConversationBinder
 	if anchor.PreviousProviderTurnID == "" {
 		provider, err = driver.Start(ctx, ports.ChatStartConfig{
 			SessionID: cfg.SessionID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath,
@@ -210,12 +212,18 @@ func (s *Service) EditMessage(
 		forkAnchor := anchor.PreviousProviderTurnID
 		providerConversationID, err = forker.Fork(ctx, &forkAnchor)
 		if err == nil {
-			provider, err = driver.Resume(ctx, ports.ChatResumeConfig{
-				SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
-				DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
-				Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
-				AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
-			})
+			if binder, ok := source.conv.(ports.ChatConversationBinder); ok &&
+				binder.BindProviderConversation(providerConversationID) {
+				provider = source.conv
+				boundProvider = binder
+			} else {
+				provider, err = driver.Resume(ctx, ports.ChatResumeConfig{
+					SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
+					DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
+					Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+					AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
+				})
+			}
 		}
 	}
 	if err != nil {
@@ -238,6 +246,17 @@ func (s *Service) EditMessage(
 	}
 	conversation := source.conversation
 	conversation.ActiveBranchID = branchID
+	if boundProvider != nil {
+		if err := s.store.CreateAndActivateConversationBranch(ctx, id, branch, generation, s.now()); err != nil {
+			if !boundProvider.BindProviderConversation(sourceProviderConversationID) {
+				err = errors.Join(err, errors.New("restore source provider conversation binding"))
+			}
+			return EditMessageResult{}, fmt.Errorf("activate edited conversation: %w", err)
+		}
+		source.CommitIdleBranchHandoff(branchID, generation)
+		abortSource = false
+		return s.sendEditedMessage(ctx, anchor.SourceBranchID, branchID, source, msg)
+	}
 	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
 	if err := s.store.CreateAndActivateConversationBranch(ctx, id, branch, generation, s.now()); err != nil {
 		_ = provider.Close()
@@ -327,6 +346,21 @@ func (s *Service) ActivateBranch(ctx context.Context, id domain.SessionID, branc
 	if err != nil {
 		return "", err
 	}
+	sourceProviderConversationID := source.ProviderConversationID()
+	if binder, ok := source.conv.(ports.ChatConversationBinder); ok &&
+		binder.BindProviderConversation(branch.ProviderConversationID) {
+		generation := s.newID()
+		if err := s.store.ActivateConversationBranch(ctx, id, source.conversation.ID, branch.ID,
+			branch.ProviderConversationID, generation, s.now()); err != nil {
+			if !binder.BindProviderConversation(sourceProviderConversationID) {
+				err = errors.Join(err, errors.New("restore source provider conversation binding"))
+			}
+			return "", err
+		}
+		source.CommitIdleBranchHandoff(branch.ID, generation)
+		abortSource = false
+		return branch.ID, nil
+	}
 	provider, err := driver.Resume(ctx, ports.ChatResumeConfig{
 		SessionID: cfg.SessionID, ProviderConversationID: branch.ProviderConversationID,
 		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
@@ -381,7 +415,7 @@ func (s *Service) installBranchController(
 		s.mu.Unlock()
 		_ = replacement.conv.Close()
 		if err := s.store.ActivateConversationBranch(ctx, id, source.conversation.ID,
-			sourceBranchID, source.ProviderConversationID(), source.generation, s.now()); err != nil {
+			sourceBranchID, source.ProviderConversationID(), source.Generation(), s.now()); err != nil {
 			return fmt.Errorf("restore source branch after controller swap conflict: %w", err)
 		}
 		return ErrControllerHandoff
