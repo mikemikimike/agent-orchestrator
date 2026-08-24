@@ -159,26 +159,10 @@ func (s *Service) EditMessage(
 		return EditMessageResult{}, err
 	}
 	forker, canFork := source.conv.(ports.ChatForker)
-	anchor, err := s.store.ConversationEditAnchor(ctx, source.conversation.ID, turnID)
-	if err != nil {
-		return EditMessageResult{}, fmt.Errorf("%w: %w", ErrEditTurnInvalid, err)
-	}
-	var content []ports.ChatContent
-	if anchor.OriginalDeliveryContentJSON != "" {
-		if err := json.Unmarshal([]byte(anchor.OriginalDeliveryContentJSON), &content); err != nil {
-			return EditMessageResult{}, fmt.Errorf("%w: decode stored prompt content: %w", ErrEditTurnInvalid, err)
-		}
-	}
-	msg.Content = content
-	if anchor.RetryActiveBranch {
-		branch, err := s.store.ConversationBranch(ctx, source.conversation.ID, anchor.SourceBranchID)
-		if err != nil {
-			return EditMessageResult{}, fmt.Errorf("load pending edited conversation: %w", err)
-		}
-		return s.sendEditedMessage(ctx, branch.ParentBranchID, branch.ID, source, msg)
-	}
-	if anchor.PreviousProviderTurnID != "" && !canFork {
-		return EditMessageResult{}, ErrForkUnsupported
+	// Preserve fast validation for missing turns and corrupt stored content, but
+	// do not make any branch-dependent decision from this unfenced snapshot.
+	if _, _, err := s.editMessageAnchor(ctx, source.conversation.ID, turnID); err != nil {
+		return EditMessageResult{}, err
 	}
 	if err := source.BeginIdleBranchHandoff(ctx); err != nil {
 		return EditMessageResult{}, err
@@ -190,9 +174,28 @@ func (s *Service) EditMessage(
 		}
 	}()
 
+	// Controller lookup and the active lineage can both change during a branch
+	// activation. Validate that this fenced controller is still published, then
+	// resolve the authoritative anchor while activation is unable to move it.
 	cfg, driver, err := s.branchLaunchConfig(id, source)
 	if err != nil {
 		return EditMessageResult{}, err
+	}
+	anchor, content, err := s.editMessageAnchor(ctx, source.conversation.ID, turnID)
+	if err != nil {
+		return EditMessageResult{}, err
+	}
+	msg.Content = content
+	if anchor.RetryActiveBranch {
+		branch, err := s.store.ConversationBranch(ctx, source.conversation.ID, anchor.SourceBranchID)
+		if err != nil {
+			return EditMessageResult{}, fmt.Errorf("load pending edited conversation: %w", err)
+		}
+		turn, sendErr := source.sendAfterIdleBranchHandoff(ctx, anchor.SourceBranchID, msg)
+		return s.finishEditedMessage(ctx, branch.ParentBranchID, branch.ID, source, turn, sendErr)
+	}
+	if anchor.PreviousProviderTurnID != "" && !canFork {
+		return EditMessageResult{}, ErrForkUnsupported
 	}
 	sourceProviderConversationID := source.ProviderConversationID()
 	var providerConversationID string
@@ -253,11 +256,17 @@ func (s *Service) EditMessage(
 			}
 			return EditMessageResult{}, fmt.Errorf("activate edited conversation: %w", err)
 		}
-		source.CommitIdleBranchHandoff(branchID, generation)
-		abortSource = false
-		return s.sendEditedMessage(ctx, anchor.SourceBranchID, branchID, source, msg)
+		turn, sendErr := source.commitIdleBranchHandoffAndSend(
+			ctx, anchor.SourceBranchID, branchID, generation, msg)
+		return s.finishEditedMessage(ctx, anchor.SourceBranchID, branchID, source, turn, sendErr)
 	}
 	replacement := newController(id, conversation, generation, provider, s.store, s.activity, s.log, s.newID, s.now)
+	// Publish the replacement fenced. Otherwise ActivateBranch can discover it
+	// after installBranchController and rebind it before the edited prompt sends.
+	if err := replacement.BeginIdleBranchHandoff(ctx); err != nil {
+		_ = provider.Close()
+		return EditMessageResult{}, fmt.Errorf("fence replacement controller: %w", err)
+	}
 	if err := s.store.CreateAndActivateConversationBranch(ctx, id, branch, generation, s.now()); err != nil {
 		_ = provider.Close()
 		return EditMessageResult{}, fmt.Errorf("activate edited conversation: %w", err)
@@ -267,19 +276,39 @@ func (s *Service) EditMessage(
 	}
 	abortSource = false
 
-	return s.sendEditedMessage(ctx, anchor.SourceBranchID, branchID, replacement, msg)
+	turn, sendErr := replacement.sendAfterIdleBranchHandoff(ctx, branchID, msg)
+	return s.finishEditedMessage(ctx, anchor.SourceBranchID, branchID, replacement, turn, sendErr)
 }
 
-// sendEditedMessage commits the branch replacement only after the provider has
-// accepted it. A transport refusal leaves an empty active branch so the same
-// source prompt and in-memory editor draft can be retried without another fork.
-func (s *Service) sendEditedMessage(
+func (s *Service) editMessageAnchor(
+	ctx context.Context,
+	conversationID, turnID string,
+) (domain.ConversationEditAnchor, []ports.ChatContent, error) {
+	anchor, err := s.store.ConversationEditAnchor(ctx, conversationID, turnID)
+	if err != nil {
+		return domain.ConversationEditAnchor{}, nil, fmt.Errorf("%w: %w", ErrEditTurnInvalid, err)
+	}
+	var content []ports.ChatContent
+	if anchor.OriginalDeliveryContentJSON != "" {
+		if err := json.Unmarshal([]byte(anchor.OriginalDeliveryContentJSON), &content); err != nil {
+			return domain.ConversationEditAnchor{}, nil,
+				fmt.Errorf("%w: decode stored prompt content: %w", ErrEditTurnInvalid, err)
+		}
+	}
+	return anchor, content, nil
+}
+
+// finishEditedMessage commits the branch replacement only after the provider
+// has accepted it. A transport refusal leaves an empty active branch so the
+// same source prompt and in-memory editor draft can be retried without another
+// fork.
+func (s *Service) finishEditedMessage(
 	ctx context.Context,
 	sourceBranchID, activeBranchID string,
 	controller *Controller,
-	msg ports.ChatUserMessage,
+	turn domain.ConversationTurn,
+	sendErr error,
 ) (EditMessageResult, error) {
-	turn, sendErr := controller.Send(ctx, msg)
 	result := EditMessageResult{
 		SourceBranchID: sourceBranchID,
 		ActiveBranchID: activeBranchID,
