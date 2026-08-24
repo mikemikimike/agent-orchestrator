@@ -191,6 +191,9 @@ func (s *Service) EditMessage(
 		if err != nil {
 			return EditMessageResult{}, fmt.Errorf("load pending edited conversation: %w", err)
 		}
+		// The helper owns fence cleanup from this point. Disarm the generic
+		// defer so it cannot erase a newer handoff after the send returns.
+		abortSource = false
 		turn, sendErr := source.sendAfterIdleBranchHandoff(ctx, anchor.SourceBranchID, msg)
 		return s.finishEditedMessage(ctx, branch.ParentBranchID, branch.ID, source, turn, sendErr)
 	}
@@ -256,6 +259,9 @@ func (s *Service) EditMessage(
 			}
 			return EditMessageResult{}, fmt.Errorf("activate edited conversation: %w", err)
 		}
+		// The helper owns fence cleanup from this point. Disarm the generic
+		// defer so it cannot erase a newer handoff after the send returns.
+		abortSource = false
 		turn, sendErr := source.commitIdleBranchHandoffAndSend(
 			ctx, anchor.SourceBranchID, branchID, generation, msg)
 		return s.finishEditedMessage(ctx, anchor.SourceBranchID, branchID, source, turn, sendErr)

@@ -601,6 +601,41 @@ type blockingEditAnchorStore struct {
 	release   chan struct{}
 }
 
+type blockingEditRollbackStore struct {
+	*store.Store
+	mu      sync.Mutex
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingEditRollbackStore) blockRollback() (<-chan struct{}, chan<- struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entered = make(chan struct{})
+	s.release = make(chan struct{})
+	return s.entered, s.release
+}
+
+func (s *blockingEditRollbackStore) RollbackTurns(
+	ctx context.Context,
+	conversationID, turnID string,
+	now time.Time,
+) (int, error) {
+	s.mu.Lock()
+	entered, release := s.entered, s.release
+	s.entered, s.release = nil, nil
+	s.mu.Unlock()
+	if entered != nil {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	return s.Store.RollbackTurns(ctx, conversationID, turnID, now)
+}
+
 func (s *blockingEditAnchorStore) blockAnchor(read int) (<-chan struct{}, chan<- struct{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1049,6 +1084,72 @@ func TestEditRetryFencesConcurrentBranchActivation(t *testing.T) {
 	}
 	if got := source.boundProviderThreads(); len(got) != 1 || got[0] != "thread-forked" {
 		t.Fatalf("provider bindings during retry race = %v, want only thread-forked", got)
+	}
+}
+
+func TestEditSendCleanupDoesNotAbortNewerHandoff(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		name := "bound fork"
+		if retry {
+			name = "retry"
+		}
+		t.Run(name, func(t *testing.T) {
+			var rollbackStore *blockingEditRollbackStore
+			h, source, _ := newEditHarnessWithStore(t, func(st *store.Store) chatsvc.Store {
+				rollbackStore = &blockingEditRollbackStore{Store: st}
+				return rollbackStore
+			})
+			ctx := context.Background()
+			completeTurn(t, h, "A", "provider-turn-1")
+			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+			second := completeTurn(t, h, "B", "provider-turn-2")
+			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
+
+			source.mu.Lock()
+			source.sendErr = errors.New("provider unavailable")
+			source.mu.Unlock()
+			if retry {
+				if _, err := h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
+					Text: "B edited", ClientMessageID: "edit-cleanup-prime", Origin: domain.MessageOriginHuman,
+				}); err == nil {
+					t.Fatal("priming EditMessage succeeded after replacement send failure")
+				}
+			}
+
+			rollbackEntered, releaseRollback := rollbackStore.blockRollback()
+			editDone := make(chan error, 1)
+			go func() {
+				_, editErr := h.svc.EditMessage(ctx, testSession, second, ports.ChatUserMessage{
+					Text: "B edited", ClientMessageID: "edit-cleanup-race", Origin: domain.MessageOriginHuman,
+				})
+				editDone <- editErr
+			}()
+			select {
+			case <-rollbackEntered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("EditMessage did not reach replacement rollback")
+			}
+
+			if err := h.ctrl.BeginIdleBranchHandoff(ctx); err != nil {
+				t.Fatalf("establish newer branch handoff: %v", err)
+			}
+			close(releaseRollback)
+			select {
+			case editErr := <-editDone:
+				if editErr == nil {
+					t.Fatal("EditMessage succeeded after provider send failure")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("EditMessage did not finish after releasing rollback")
+			}
+
+			if _, err := h.ctrl.Send(ctx, ports.ChatUserMessage{
+				Text: "must remain fenced", ClientMessageID: "edit-cleanup-probe",
+			}); !errors.Is(err, chatsvc.ErrControllerHandoff) {
+				t.Fatalf("Send after newer handoff = %v, want ErrControllerHandoff", err)
+			}
+			h.ctrl.AbortHandoff()
+		})
 	}
 }
 
