@@ -20,10 +20,48 @@ import (
 // can tell "the driver refuses" from "the driver does not offer this at all". The
 // plain fakeConversation implements none of the three, which is what the unsupported
 // paths exercise.
+var errProviderConversationOwned = errors.New("provider conversation already has a writer")
+
+type providerWriterRegistry struct {
+	mu     sync.Mutex
+	owners map[string]any
+}
+
+func newProviderWriterRegistry() *providerWriterRegistry {
+	return &providerWriterRegistry{owners: make(map[string]any)}
+}
+
+func (r *providerWriterRegistry) claim(providerConversationID string, owner any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if current, ok := r.owners[providerConversationID]; ok && current != owner {
+		return fmt.Errorf("%w: %s", errProviderConversationOwned, providerConversationID)
+	}
+	r.owners[providerConversationID] = owner
+	return nil
+}
+
+func (r *providerWriterRegistry) ownedBy(providerConversationID string, owner any) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.owners[providerConversationID] == owner
+}
+
+func (r *providerWriterRegistry) release(owner any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for providerConversationID, current := range r.owners {
+		if current == owner {
+			delete(r.owners, providerConversationID)
+		}
+	}
+}
+
 type historyRecorder struct {
 	*fakeConversation
 
 	mu           sync.Mutex
+	writers      *providerWriterRegistry
 	rolledBack   []string
 	titles       []string
 	forkedTo     string
@@ -36,7 +74,16 @@ type historyRecorder struct {
 }
 
 func newHistoryRecorder() *historyRecorder {
-	return &historyRecorder{fakeConversation: newFakeConversation(), forkedTo: "thread-forked"}
+	writers := newProviderWriterRegistry()
+	recorder := &historyRecorder{
+		fakeConversation: newFakeConversation(),
+		writers:          writers,
+		forkedTo:         "thread-forked",
+	}
+	if err := writers.claim(recorder.providerConversationID, recorder); err != nil {
+		panic(err)
+	}
+	return recorder
 }
 
 func (h *historyRecorder) Rollback(_ context.Context, providerTurnID string) error {
@@ -61,6 +108,9 @@ func (h *historyRecorder) Fork(_ context.Context, anchor *string) (string, error
 	if h.forkErr != nil {
 		return "", h.forkErr
 	}
+	if err := h.writers.claim(h.forkedTo, h); err != nil {
+		return "", err
+	}
 	return h.forkedTo, nil
 }
 
@@ -81,12 +131,23 @@ func (h *historyRecorder) lastForkAnchor() *string {
 func (h *historyRecorder) BindProviderConversation(providerConversationID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if providerConversationID != h.forkedTo && providerConversationID != "thread-1" {
+	if !h.writers.ownedBy(providerConversationID, h) {
 		return false
 	}
 	h.providerConversationID = providerConversationID
 	h.boundThreads = append(h.boundThreads, providerConversationID)
 	return true
+}
+
+func (h *historyRecorder) ProviderConversationID() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.providerConversationID
+}
+
+func (h *historyRecorder) Close() error {
+	h.writers.release(h)
+	return h.fakeConversation.Close()
 }
 
 func (h *historyRecorder) boundProviderThreads() []string {
@@ -528,26 +589,62 @@ type editDriverState struct {
 	mu          sync.Mutex
 	startCalls  int
 	resumeCalls []ports.ChatResumeConfig
-	fresh       *fakeConversation
-	resumed     map[string]*fakeConversation
+	fresh       *ownedFakeConversation
+	resumed     map[string]*ownedFakeConversation
+}
+
+type ownedFakeConversation struct {
+	*fakeConversation
+	writers *providerWriterRegistry
+}
+
+func newOwnedFakeConversation(
+	writers *providerWriterRegistry,
+	providerConversationID string,
+	turnSeq int,
+) *ownedFakeConversation {
+	conversation := newFakeConversation()
+	conversation.providerConversationID = providerConversationID
+	conversation.turnSeq = turnSeq
+	return &ownedFakeConversation{fakeConversation: conversation, writers: writers}
+}
+
+func (c *ownedFakeConversation) acquire() error {
+	return c.writers.claim(c.providerConversationID, c)
+}
+
+func (c *ownedFakeConversation) Close() error {
+	c.writers.release(c)
+	return c.fakeConversation.Close()
+}
+
+func (s *editDriverState) resumeConversation(
+	cfg ports.ChatResumeConfig,
+) (ports.ChatConversation, error) {
+	s.mu.Lock()
+	s.resumeCalls = append(s.resumeCalls, cfg)
+	conversation := s.resumed[cfg.ProviderConversationID]
+	s.mu.Unlock()
+	if conversation == nil {
+		return nil, errors.New("unexpected provider conversation: " + cfg.ProviderConversationID)
+	}
+	if err := conversation.acquire(); err != nil {
+		return nil, err
+	}
+	return conversation, nil
 }
 
 func newEditHarness(t *testing.T) (*harness, *historyRecorder, *editDriverState) {
 	t.Helper()
 	st := openStore(t)
 	source := newHistoryRecorder()
-	fresh := newFakeConversation()
-	fresh.providerConversationID = "thread-fresh"
-	fresh.turnSeq = 100
-	forked := newFakeConversation()
-	forked.providerConversationID = "thread-forked"
-	forked.turnSeq = 200
-	root := newFakeConversation()
-	root.providerConversationID = "thread-1"
-	root.turnSeq = 300
+	writers := source.writers
+	fresh := newOwnedFakeConversation(writers, "thread-fresh", 100)
+	forked := newOwnedFakeConversation(writers, "thread-forked", 200)
+	root := newOwnedFakeConversation(writers, "thread-1", 300)
 	state := &editDriverState{
 		fresh: fresh,
-		resumed: map[string]*fakeConversation{
+		resumed: map[string]*ownedFakeConversation{
 			"thread-forked": forked,
 			"thread-1":      root,
 		},
@@ -560,18 +657,12 @@ func newEditHarness(t *testing.T) (*harness, *historyRecorder, *editDriverState)
 		if state.startCalls == 1 {
 			return source, nil
 		}
+		if err := state.fresh.acquire(); err != nil {
+			return nil, err
+		}
 		return state.fresh, nil
 	}
-	driver.resume = func(cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		state.resumeCalls = append(state.resumeCalls, cfg)
-		conv := state.resumed[cfg.ProviderConversationID]
-		if conv == nil {
-			return nil, errors.New("unexpected provider conversation: " + cfg.ProviderConversationID)
-		}
-		return conv, nil
-	}
+	driver.resume = state.resumeConversation
 
 	clock := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
 	var idMu sync.Mutex
@@ -608,6 +699,42 @@ func newEditHarness(t *testing.T) (*harness, *historyRecorder, *editDriverState)
 	}
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 	return &harness{svc: svc, st: st, conv: source.fakeConversation, ctrl: ctrl, clock: clock}, source, state
+}
+
+func TestEditProviderWriterOwnershipRequiresForkAndClose(t *testing.T) {
+	_, source, driver := newEditHarness(t)
+	ctx := context.Background()
+
+	if source.BindProviderConversation("thread-forked") {
+		t.Fatal("unforked provider conversation accepted a writer binding")
+	}
+	forked, err := source.Fork(ctx, nil)
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	if _, err := driver.resumeConversation(ports.ChatResumeConfig{
+		ProviderConversationID: forked,
+	}); !errors.Is(err, errProviderConversationOwned) {
+		t.Fatalf("concurrent Resume error = %v, want errProviderConversationOwned", err)
+	}
+	if !source.BindProviderConversation(forked) {
+		t.Fatal("fork owner could not bind its provider conversation")
+	}
+	if err := source.Close(); err != nil {
+		t.Fatalf("Close fork owner: %v", err)
+	}
+	resumed, err := driver.resumeConversation(ports.ChatResumeConfig{
+		ProviderConversationID: forked,
+	})
+	if err != nil {
+		t.Fatalf("Resume after owner close: %v", err)
+	}
+	if resumed.ProviderConversationID() != forked {
+		t.Fatalf("resumed provider conversation = %q, want %q", resumed.ProviderConversationID(), forked)
+	}
+	if err := resumed.Close(); err != nil {
+		t.Fatalf("Close resumed writer: %v", err)
+	}
 }
 
 func TestEditMessageForksBeforeMiddlePromptAndReusesStoredContent(t *testing.T) {
