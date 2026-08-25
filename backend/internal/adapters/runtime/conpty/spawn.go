@@ -46,3 +46,35 @@ func stripEnvAssignments(argv []string) (assignments, rest []string) {
 	}
 	return argv[1:i], argv[i:]
 }
+
+func mergeWindowsEnv(base []string, overlay map[string]string, assignments []string) []string {
+	merged := make(map[string]string, len(base)+len(overlay)+len(assignments))
+	canonical := make(map[string]string, len(base)+len(overlay)+len(assignments))
+	for _, entry := range base {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			setWindowsEnv(merged, canonical, key, value)
+		}
+	}
+	for key, value := range overlay {
+		setWindowsEnv(merged, canonical, key, value)
+	}
+	for _, entry := range assignments {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			setWindowsEnv(merged, canonical, key, value)
+		}
+	}
+	out := make([]string, 0, len(merged))
+	for key, value := range merged {
+		out = append(out, key+"="+value)
+	}
+	return out
+}
+
+func setWindowsEnv(merged, canonical map[string]string, key, value string) {
+	folded := strings.ToUpper(key)
+	if existing, ok := canonical[folded]; ok && existing != key {
+		delete(merged, existing)
+	}
+	canonical[folded] = key
+	merged[key] = value
+}

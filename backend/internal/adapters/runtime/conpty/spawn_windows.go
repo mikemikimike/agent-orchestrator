@@ -79,12 +79,10 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	args := append([]string{"pty-host", sessionID, cwd}, argv...)
 
 	// Merge env: inherit parent, overlay caller-provided vars, then apply the
-	// assignments stripped from the argv prefix.
-	merged := os.Environ()
-	for k, v := range env {
-		merged = append(merged, k+"="+v)
-	}
-	merged = append(merged, envAssignments...)
+	// assignments stripped from the argv prefix. Windows environment keys are
+	// case-insensitive, so PATH must replace an inherited Path entry instead of
+	// surviving beside it and letting the old package-manager path win.
+	merged := mergeWindowsEnv(os.Environ(), env, envAssignments)
 
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = cwd
