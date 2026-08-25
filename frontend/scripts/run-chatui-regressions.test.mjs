@@ -145,14 +145,18 @@ describe("focused contract lanes", () => {
 		expect(goContractDefinitions).toEqual([
 			expect.objectContaining({
 				name: requiredGoContracts[0],
-				playwrightMarker: expect.stringContaining("MQA-07"),
+				playwrightMarker: expect.stringContaining("MQA-04"),
 			}),
 			expect.objectContaining({
 				name: requiredGoContracts[1],
-				playwrightMarker: expect.stringContaining("MQA-06"),
+				playwrightMarker: expect.stringContaining("MQA-07"),
 			}),
 			expect.objectContaining({
 				name: requiredGoContracts[2],
+				playwrightMarker: expect.stringContaining("MQA-06"),
+			}),
+			expect.objectContaining({
+				name: requiredGoContracts[3],
 				playwrightMarker: expect.stringContaining("MQA-08"),
 			}),
 		]);

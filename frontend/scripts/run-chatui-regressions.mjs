@@ -57,6 +57,10 @@ export const requiredPlaywrightContracts = Object.freeze([
 		marker: "MQA-04 composer durability › keeps drafts session-scoped across interface, navigation, reload, and accepted send",
 	},
 	{
+		id: "MQA-04:process-restart",
+		marker: "MQA-04 composer durability › persists drafts across a Chromium process restart with the same profile",
+	},
+	{
 		id: "MQA-08:imported-outcome",
 		marker: "MQA-08 imported Terminal outcome › uses a neutral imported-history label when completion metadata is unavailable",
 	},
@@ -91,6 +95,11 @@ export const requiredPlaywrightContracts = Object.freeze([
 	},
 ]);
 export const goContractDefinitions = Object.freeze([
+	{
+		name: "TestChatUIRegressionDraftDeliveryRecoveryIsAtMostOnce",
+		playwrightMarker:
+			"ChatUI interface switching › MQA-04 composer durability › keeps drafts session-scoped across interface, navigation, reload, and accepted send",
+	},
 	{
 		name: "TestChatUIRegressionEncodedSyntheticBranchIDIsDecoded",
 		playwrightMarker:

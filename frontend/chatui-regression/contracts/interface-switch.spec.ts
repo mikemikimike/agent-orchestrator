@@ -1,4 +1,12 @@
-import { conversationSnapshot, expect, message, test, turn } from "../support/test";
+import { chromium, type BrowserContext, type Page } from "@playwright/test";
+import {
+	ChatUIRegressionHarness,
+	conversationSnapshot,
+	expect,
+	message,
+	test,
+	turn,
+} from "../support/test";
 
 test.describe("ChatUI interface switching", () => {
 	test.describe("MQA-06 failed target-history checkpoint", () => {
@@ -182,6 +190,87 @@ test.describe("ChatUI interface switching", () => {
 			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText("");
 			await page.reload();
 			await expect(page.getByRole("combobox", { name: "Message the agent" }), "accepted draft must not resurrect after reload").toHaveText("");
+		});
+
+		test("persists drafts across a Chromium process restart with the same profile", async ({ page: evidencePage }, testInfo) => {
+			const baseURL = testInfo.project.use.baseURL;
+			if (typeof baseURL !== "string") throw new Error("ChatUI process restart requires a baseURL");
+			const profilePath = testInfo.outputPath("persistent-chromium-profile");
+			const options = { sessionId: "chatui-draft-process-restart" } as const;
+			let activeContext: BrowserContext | undefined;
+
+			const launch = async (stage: string) => {
+				const context = await chromium.launchPersistentContext(profilePath, {
+					baseURL,
+					headless: true,
+					recordVideo: { dir: testInfo.outputPath("persistent-videos", stage) },
+				});
+				activeContext = context;
+				const page = context.pages()[0] ?? (await context.newPage());
+				const harness = await ChatUIRegressionHarness.create(page, options);
+				await harness.open();
+				return { context, harness, page };
+			};
+
+			const close = async (
+				stage: string,
+				context: BrowserContext,
+				page: Page,
+				harness: ChatUIRegressionHarness,
+			) => {
+				await harness.attachEvidence(testInfo);
+				expect(harness.consoleErrors, `${stage} console errors`).toEqual([]);
+				expect(harness.pageErrors, `${stage} page errors`).toEqual([]);
+				expect(harness.unexpectedRequests, `${stage} unexpected requests`).toEqual([]);
+				const video = page.video();
+				await context.close();
+				activeContext = undefined;
+				if (video) {
+					await testInfo.attach(`persistent-${stage}-video`, {
+						contentType: "video/webm",
+						path: await video.path(),
+					});
+				}
+			};
+
+			try {
+				const first = await launch("drafted");
+				const draft = "draft-survives-browser-process-restart-8f31";
+				await first.page.getByRole("combobox", { name: "Message the agent" }).fill(draft);
+				await expect(first.page.getByRole("combobox", { name: "Message the agent" })).toHaveText(draft);
+				await close("drafted", first.context, first.page, first.harness);
+
+				const restored = await launch("restored");
+				const restoredComposer = restored.page.getByRole("combobox", { name: "Message the agent" });
+				await expect(restoredComposer, "draft after Chromium profile relaunch").toHaveText(draft);
+				const restoredScreen = testInfo.outputPath("process-restart-restored-draft.png");
+				await restored.page.screenshot({ fullPage: true, path: restoredScreen });
+				await testInfo.attach("process-restart-restored-draft", {
+					contentType: "image/png",
+					path: restoredScreen,
+				});
+				await restored.page.getByRole("button", { name: "Send message" }).click();
+				await expect.poll(() => restored.harness.requestsMatching("POST", "/conversation/messages").length).toBe(1);
+				await expect(restoredComposer, "accepted draft clears before process exit").toHaveText("");
+				await close("restored", restored.context, restored.page, restored.harness);
+
+				const cleared = await launch("cleared");
+				await expect(
+					cleared.page.getByRole("combobox", { name: "Message the agent" }),
+					"accepted draft must not resurrect after a second Chromium profile relaunch",
+				).toHaveText("");
+				expect(cleared.harness.requestsMatching("POST", "/conversation/messages")).toHaveLength(0);
+				const clearedScreen = testInfo.outputPath("process-restart-cleared-draft.png");
+				await cleared.page.screenshot({ fullPage: true, path: clearedScreen });
+				await testInfo.attach("process-restart-cleared-draft", {
+					contentType: "image/png",
+					path: clearedScreen,
+				});
+				await close("cleared", cleared.context, cleared.page, cleared.harness);
+			} finally {
+				await activeContext?.close().catch(() => undefined);
+				await evidencePage.goto("about:blank");
+			}
 		});
 
 		test("keeps an inline edit independent and cancellation preserves the composer", async ({ chatUI, page }) => {
