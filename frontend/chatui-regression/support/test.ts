@@ -150,6 +150,8 @@ export class ChatUIRegressionHarness {
 	stagePaths = [".ao/attachments/attachment-regression.png"];
 
 	private readonly options: ResolvedChatUIHarnessOptions;
+	private deferredAttachmentResponse?: Promise<void>;
+	private releaseAttachmentResponse?: () => void;
 	private deferredMessageResponse?: Promise<void>;
 	private releaseMessageResponse?: () => void;
 	private deferredEditResponse?: Promise<void>;
@@ -343,7 +345,14 @@ export class ChatUIRegressionHarness {
 				return;
 			}
 			if (method === "POST" && pathname.endsWith("/attachments")) {
-				await route.fulfill({ json: { paths: clone(this.stagePaths) } });
+				const deferred = this.deferredAttachmentResponse;
+				if (deferred) {
+					this.deferredAttachmentResponse = undefined;
+					await deferred;
+				}
+				await route
+					.fulfill({ json: { paths: clone(this.stagePaths) } })
+					.catch(() => undefined);
 				return;
 			}
 			if (method === "POST" && pathname.endsWith("/conversation/messages")) {
@@ -576,6 +585,17 @@ export class ChatUIRegressionHarness {
 		return this.requests.filter(
 			(request) => request.method === method && request.pathname.endsWith(suffix),
 		);
+	}
+
+	deferNextAttachmentResponse(): void {
+		this.deferredAttachmentResponse = new Promise<void>((resolve) => {
+			this.releaseAttachmentResponse = resolve;
+		});
+	}
+
+	releaseDeferredAttachmentResponse(): void {
+		this.releaseAttachmentResponse?.();
+		this.releaseAttachmentResponse = undefined;
 	}
 
 	deferNextMessageResponse(): void {

@@ -247,6 +247,48 @@ test.describe("ChatUI interface switching", () => {
 			await expect(page.getByRole("button", { name: "Remove durable-regression.png" }), "accepted attachment must not resurrect").toHaveCount(0);
 		});
 
+		test("explicit pending-attachment discard prevents late descriptor resurrection", async ({ chatUI, page }) => {
+			chatUI.deferNextAttachmentResponse();
+			try {
+				await chatUI.open();
+				await page.locator('input[type="file"]').setInputFiles({
+					name: "discarded-late.png",
+					mimeType: "image/png",
+					buffer: Buffer.from("staged-bytes-must-not-resurrect-the-descriptor"),
+				});
+				await expect.poll(() => chatUI.requestsMatching("POST", "/attachments").length).toBe(1);
+
+				let confirmation = "";
+				page.once("dialog", async (dialog) => {
+					confirmation = dialog.message();
+					await dialog.accept();
+				});
+				await page.getByRole("button", { name: "Switch to terminal UI" }).click();
+				await expect.poll(() => chatUI.requestsMatching("POST", "/interface-transition").length).toBe(1);
+				expect(confirmation).toContain("Attachments are still being saved");
+
+				chatUI.releaseDeferredAttachmentResponse();
+				await expect(page.getByRole("button", { name: "Remove discarded-late.png" })).toHaveCount(0);
+				const draftKey = `ao.chat.draft:${encodeURIComponent(chatUI.sessionId)}`;
+				await expect
+					.poll(() =>
+						page.evaluate((key) => {
+							const raw = localStorage.getItem(key);
+							return raw ? JSON.parse(raw).composer.attachments : [];
+						}, draftKey),
+					)
+					.toEqual([]);
+
+				await page.reload();
+				await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
+				await expect(page.getByRole("button", { name: "Remove discarded-late.png" })).toHaveCount(0);
+				expect(chatUI.requestsMatching("POST", "/attachments")).toHaveLength(1);
+				expect(chatUI.requestsMatching("DELETE", "/attachments")).toHaveLength(0);
+			} finally {
+				chatUI.releaseDeferredAttachmentResponse();
+			}
+		});
+
 		test("reload during an unresolved send stays fail-closed and retries with the same id", async ({ chatUI, page }) => {
 			chatUI.deferNextMessageResponse();
 			try {
