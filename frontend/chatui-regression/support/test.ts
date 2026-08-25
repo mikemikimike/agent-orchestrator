@@ -149,6 +149,12 @@ export class ChatUIRegressionHarness {
 	stagePaths = [".ao/attachments/attachment-regression.png"];
 
 	private readonly options: ResolvedChatUIHarnessOptions;
+	private deferredMessageResponse?: Promise<void>;
+	private releaseMessageResponse?: () => void;
+	private deferredEditResponse?: Promise<void>;
+	private releaseEditResponse?: () => void;
+	private deferredSteerResponse?: Promise<void>;
+	private releaseSteerResponse?: () => void;
 
 	private constructor(page: Page, options: ResolvedChatUIHarnessOptions) {
 		this.page = page;
@@ -328,7 +334,36 @@ export class ChatUIRegressionHarness {
 				return;
 			}
 			if (method === "POST" && pathname.endsWith("/conversation/messages")) {
-				await route.fulfill({ json: { status: "accepted", turnId: "turn-accepted" } });
+				const deferred = this.deferredMessageResponse;
+				if (deferred) {
+					this.deferredMessageResponse = undefined;
+					await deferred;
+				}
+				await route
+					.fulfill({ json: { status: "accepted", turnId: "turn-accepted" } })
+					.catch(() => undefined);
+				return;
+			}
+			if (
+				method === "POST" &&
+				pathname.includes("/conversation/turns/") &&
+				pathname.endsWith("/edit")
+			) {
+				const deferred = this.deferredEditResponse;
+				if (deferred) {
+					this.deferredEditResponse = undefined;
+					await deferred;
+				}
+				await route
+					.fulfill({
+						status: 202,
+						json: {
+							sourceBranchId: "branch-root",
+							activeBranchId: "branch-edit",
+							turn: turn("turn-edited", "running"),
+						},
+					})
+					.catch(() => undefined);
 				return;
 			}
 			if (method === "POST" && pathname.endsWith("/conversation/interrupt")) {
@@ -340,6 +375,20 @@ export class ChatUIRegressionHarness {
 				const current = (this.conversation.settings ?? {}) as JsonObject;
 				this.conversation.settings = { ...clone(current), ...clone(body) };
 				await route.fulfill({ json: clone(this.conversation.settings) });
+				return;
+			}
+			if (method === "POST" && pathname.endsWith("/conversation/steer")) {
+				const deferred = this.deferredSteerResponse;
+				if (deferred) {
+					this.deferredSteerResponse = undefined;
+					await deferred;
+				}
+				await route
+					.fulfill({
+						status: 202,
+						json: { status: "accepted", providerTurnId: "provider-running-steer" },
+					})
+					.catch(() => undefined);
 				return;
 			}
 			if (
@@ -489,6 +538,39 @@ export class ChatUIRegressionHarness {
 		return this.requests.filter(
 			(request) => request.method === method && request.pathname.endsWith(suffix),
 		);
+	}
+
+	deferNextMessageResponse(): void {
+		this.deferredMessageResponse = new Promise<void>((resolve) => {
+			this.releaseMessageResponse = resolve;
+		});
+	}
+
+	releaseDeferredMessageResponse(): void {
+		this.releaseMessageResponse?.();
+		this.releaseMessageResponse = undefined;
+	}
+
+	deferNextEditResponse(): void {
+		this.deferredEditResponse = new Promise<void>((resolve) => {
+			this.releaseEditResponse = resolve;
+		});
+	}
+
+	releaseDeferredEditResponse(): void {
+		this.releaseEditResponse?.();
+		this.releaseEditResponse = undefined;
+	}
+
+	deferNextSteerResponse(): void {
+		this.deferredSteerResponse = new Promise<void>((resolve) => {
+			this.releaseSteerResponse = resolve;
+		});
+	}
+
+	releaseDeferredSteerResponse(): void {
+		this.releaseSteerResponse?.();
+		this.releaseSteerResponse = undefined;
 	}
 
 	async setMode(mode: "chat" | "tui"): Promise<void> {

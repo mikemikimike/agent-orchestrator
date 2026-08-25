@@ -320,6 +320,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					onNewShellTerminalShortcut: unsubscribe,
 					onCloseShellTerminalShortcut: unsubscribe,
 					setCloseShellTerminalShortcutEnabled: () => undefined,
+					setChatDraftRisk: () => undefined,
 					onOpenSettingsShortcut: unsubscribe,
 					onPreviousSessionShortcut: unsubscribe,
 					onNextSessionShortcut: unsubscribe,

@@ -149,29 +149,26 @@ test.describe("ChatUI interface switching", () => {
 
 			let composer = page.getByRole("combobox", { name: "Message the agent" });
 			await expect(composer).toBeVisible();
-			await expect.soft(composer, "draft after full Chat surface unmount").toContainText(primaryDraft);
-			if (!(await composer.textContent())?.includes(primaryDraft)) await composer.fill(primaryDraft);
+			await expect(composer, "draft after full Chat surface unmount").toHaveText(primaryDraft);
 
 			await chatUI.navigateToSession(secondarySessionId);
 			composer = page.getByRole("combobox", { name: "Message the agent" });
-			await expect.soft(composer, "primary draft must not leak into a second session").not.toContainText(primaryDraft);
+			await expect(composer, "primary draft must not leak into a second session").not.toContainText(primaryDraft);
 			await composer.fill(secondaryDraft);
 
 			await chatUI.navigateToSession(chatUI.sessionId);
 			composer = page.getByRole("combobox", { name: "Message the agent" });
-			await expect.soft(composer, "primary draft after session navigation").toContainText(primaryDraft);
-			await expect.soft(composer, "secondary draft must remain session-scoped").not.toContainText(secondaryDraft);
-			if (!(await composer.textContent())?.includes(primaryDraft)) await composer.fill(primaryDraft);
+			await expect(composer, "primary draft after session navigation").toHaveText(primaryDraft);
+			await expect(composer, "secondary draft must remain session-scoped").not.toContainText(secondaryDraft);
 
 			await page.reload();
 			await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
 			composer = page.getByRole("combobox", { name: "Message the agent" });
-			await expect.soft(composer, "primary draft after renderer reload").toContainText(primaryDraft);
+			await expect(composer, "primary draft after renderer reload").toHaveText(primaryDraft);
 
 			await chatUI.navigateToSession(secondarySessionId);
 			composer = page.getByRole("combobox", { name: "Message the agent" });
-			await expect.soft(composer, "secondary draft survives independently").toContainText(secondaryDraft);
-			if (!(await composer.textContent())?.includes(secondaryDraft)) await composer.fill(secondaryDraft);
+			await expect(composer, "secondary draft survives independently").toHaveText(secondaryDraft);
 
 			await page.getByRole("button", { name: "Send message" }).click();
 			await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/messages").length).toBe(1);
@@ -179,10 +176,300 @@ test.describe("ChatUI interface switching", () => {
 
 			await chatUI.navigateToSession(chatUI.sessionId);
 			await expect
-				.soft(page.getByRole("combobox", { name: "Message the agent" }), "sending the secondary draft preserves the primary draft")
-				.toContainText(primaryDraft);
+				(page.getByRole("combobox", { name: "Message the agent" }), "sending the secondary draft preserves the primary draft")
+				.toHaveText(primaryDraft);
 			await chatUI.navigateToSession(secondarySessionId);
 			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText("");
+			await page.reload();
+			await expect(page.getByRole("combobox", { name: "Message the agent" }), "accepted draft must not resurrect after reload").toHaveText("");
+		});
+
+		test("keeps an inline edit independent and cancellation preserves the composer", async ({ chatUI, page }) => {
+			const composerDraft = "independent-composer-draft-f3b1";
+			const inlineDraft = "persisted-inline-edit-55d9";
+			chatUI.conversation = {
+				...chatUI.conversation,
+				latestSequence: 1,
+				oldestSequence: 1,
+				turns: [turn("turn-editable", "completed", { providerTurnId: "provider-turn-editable" })],
+				messages: [
+					message("message-editable", "turn-editable", 1, "user", "Original user prompt", {
+						editAvailable: true,
+					}),
+				],
+			};
+
+			await chatUI.open();
+			const composer = page.getByRole("combobox", { name: "Message the agent" });
+			await composer.fill(composerDraft);
+			await page.getByRole("button", { name: "Edit user message" }).click();
+			const editor = page.getByRole("textbox", { name: "Edit message" });
+			await editor.fill(inlineDraft);
+
+			await chatUI.setMode("tui");
+			await expect(page.getByTestId("terminal-interaction-surface")).toBeVisible();
+			await chatUI.setMode("chat");
+			await expect(page.getByRole("textbox", { name: "Edit message" })).toHaveValue(inlineDraft);
+			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText(composerDraft);
+
+			await page.getByRole("textbox", { name: "Edit message" }).press("Escape");
+			await expect(page.getByRole("textbox", { name: "Edit message" })).toHaveCount(0);
+			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText(composerDraft);
+
+			await page.reload();
+			await expect(page.getByRole("textbox", { name: "Edit message" }), "cancelled inline edit must not resurrect").toHaveCount(0);
+			await expect(page.getByRole("combobox", { name: "Message the agent" }), "cancelling an inline edit must not clear the composer").toHaveText(composerDraft);
+		});
+
+		test("restores only durable attachment descriptors and clears them after acceptance", async ({ chatUI, page }) => {
+			await chatUI.open();
+			await page.locator('input[type="file"]').setInputFiles({
+				name: "durable-regression.png",
+				mimeType: "image/png",
+				buffer: Buffer.from("durable-attachment-evidence"),
+			});
+
+			await expect(page.getByRole("button", { name: "Remove durable-regression.png" })).toBeVisible();
+			await expect.poll(() => chatUI.requestsMatching("POST", "/attachments").length).toBe(1);
+
+			await page.reload();
+			await expect(page.getByRole("button", { name: "Remove durable-regression.png" }), "durably staged attachment after reload").toBeVisible();
+			await page.getByRole("combobox", { name: "Message the agent" }).fill("Inspect the restored attachment");
+			await page.getByRole("button", { name: "Send message" }).click();
+
+			await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/messages").length).toBe(1);
+			expect(chatUI.requestsMatching("POST", "/attachments")).toHaveLength(1);
+			const sent = chatUI.requestsMatching("POST", "/conversation/messages")[0]?.body as Record<string, unknown>;
+			expect(String(sent.text ?? "")).toContain(".ao/attachments/attachment-regression.png");
+			await expect(page.getByRole("button", { name: "Remove durable-regression.png" })).toHaveCount(0);
+
+			await page.reload();
+			await expect(page.getByRole("button", { name: "Remove durable-regression.png" }), "accepted attachment must not resurrect").toHaveCount(0);
+		});
+
+		test("reload during an unresolved send stays fail-closed and retries with the same id", async ({ chatUI, page }) => {
+			chatUI.deferNextMessageResponse();
+			try {
+				await chatUI.open();
+				const composer = page.getByRole("combobox", { name: "Message the agent" });
+				await composer.fill("crash-safe delivery");
+				await page.getByRole("button", { name: "Send message" }).click();
+				await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/messages").length).toBe(1);
+
+				await page.reload();
+				await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText(
+					"crash-safe delivery",
+				);
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute(
+					"contenteditable",
+					"false",
+				);
+				await expect(page.getByRole("alert")).toContainText(
+					"delivery wasn’t confirmed before Chat restarted",
+				);
+				await expect(page.getByRole("button", { name: "Retry message safely" })).toBeEnabled();
+				expect(chatUI.requestsMatching("POST", "/conversation/messages")).toHaveLength(1);
+
+				chatUI.releaseDeferredMessageResponse();
+				await page.getByRole("button", { name: "Retry message safely" }).click();
+				await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/messages").length).toBe(2);
+				const attempts = chatUI.requestsMatching("POST", "/conversation/messages");
+				expect((attempts[0]?.body as Record<string, unknown>).clientMessageId).toBe(
+					(attempts[1]?.body as Record<string, unknown>).clientMessageId,
+				);
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText("");
+			} finally {
+				chatUI.releaseDeferredMessageResponse();
+			}
+		});
+
+		test("accepted send with failed removal never redispatches after reload", async ({ chatUI, page }) => {
+			await page.addInitScript(() => {
+				const state = window as typeof window & { __aoFailDraftRemoval?: boolean };
+				state.__aoFailDraftRemoval = true;
+				const originalRemove = Storage.prototype.removeItem;
+				Storage.prototype.removeItem = function removeItemWithDraftFailure(key: string) {
+					if (state.__aoFailDraftRemoval && key.startsWith("ao.chat.draft:")) {
+						throw new DOMException("blocked", "SecurityError");
+					}
+					return originalRemove.call(this, key);
+				};
+			});
+
+			await chatUI.open();
+			await page.getByRole("combobox", { name: "Message the agent" }).fill("accepted exactly once");
+			await page.getByRole("button", { name: "Send message" }).click();
+			await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/messages").length).toBe(1);
+			await expect(page.getByRole("button", { name: "Finish clearing accepted message" })).toBeEnabled();
+
+			await page.reload();
+			await expect(page.getByRole("button", { name: "Finish clearing accepted message" })).toBeEnabled();
+			await expect(page.getByRole("alert")).toContainText("local draft couldn’t be cleared");
+			expect(chatUI.requestsMatching("POST", "/conversation/messages")).toHaveLength(1);
+
+			await page.evaluate(() => {
+				(window as typeof window & { __aoFailDraftRemoval?: boolean }).__aoFailDraftRemoval = false;
+			});
+			await page.getByRole("button", { name: "Finish clearing accepted message" }).click();
+			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText("");
+			expect(chatUI.requestsMatching("POST", "/conversation/messages")).toHaveLength(1);
+		});
+
+		test("reload during an unresolved inline edit stays fail-closed and reuses its id", async ({ chatUI, page }) => {
+			chatUI.conversation = {
+				...chatUI.conversation,
+				latestSequence: 1,
+				oldestSequence: 1,
+				turns: [turn("turn-edit-reload", "completed", { providerTurnId: "provider-edit-reload" })],
+				messages: [
+					message("message-edit-reload", "turn-edit-reload", 1, "user", "Original edit target", {
+						editAvailable: true,
+					}),
+				],
+			};
+			chatUI.deferNextEditResponse();
+			try {
+				await chatUI.open();
+				await page.getByRole("button", { name: "Edit user message" }).click();
+				const editor = page.getByRole("textbox", { name: "Edit message" });
+				await editor.fill("crash-safe inline edit");
+				await page.getByRole("button", { name: "Send edited message" }).click();
+				await expect.poll(() => chatUI.requestsMatching("POST", "/edit").length).toBe(1);
+
+				await page.reload();
+				await expect(page.getByRole("textbox", { name: "Edit message" })).toHaveValue(
+					"crash-safe inline edit",
+				);
+				await expect(page.getByRole("textbox", { name: "Edit message" })).toBeDisabled();
+				await expect(page.getByRole("alert")).toContainText(
+					"delivery wasn’t confirmed before Chat restarted",
+				);
+				await expect(page.getByRole("button", { name: "Retry edit safely" })).toBeEnabled();
+				expect(chatUI.requestsMatching("POST", "/edit")).toHaveLength(1);
+
+				chatUI.releaseDeferredEditResponse();
+				await page.getByRole("button", { name: "Retry edit safely" }).click();
+				await expect.poll(() => chatUI.requestsMatching("POST", "/edit").length).toBe(2);
+				const attempts = chatUI.requestsMatching("POST", "/edit");
+				expect((attempts[0]?.body as Record<string, unknown>).clientMessageId).toBe(
+					(attempts[1]?.body as Record<string, unknown>).clientMessageId,
+				);
+				await expect(page.getByRole("textbox", { name: "Edit message" })).toHaveCount(0);
+			} finally {
+				chatUI.releaseDeferredEditResponse();
+			}
+		});
+
+		test("accepted inline edit with failed removal never redispatches after reload", async ({ chatUI, page }) => {
+			chatUI.conversation = {
+				...chatUI.conversation,
+				latestSequence: 1,
+				oldestSequence: 1,
+				turns: [turn("turn-edit-clear", "completed", { providerTurnId: "provider-edit-clear" })],
+				messages: [
+					message("message-edit-clear", "turn-edit-clear", 1, "user", "Original clear target", {
+						editAvailable: true,
+					}),
+				],
+			};
+			await page.addInitScript(() => {
+				const state = window as typeof window & { __aoFailInlineDraftRemoval?: boolean };
+				state.__aoFailInlineDraftRemoval = true;
+				const originalRemove = Storage.prototype.removeItem;
+				Storage.prototype.removeItem = function removeItemWithInlineDraftFailure(key: string) {
+					if (state.__aoFailInlineDraftRemoval && key.startsWith("ao.chat.draft:")) {
+						throw new DOMException("blocked", "SecurityError");
+					}
+					return originalRemove.call(this, key);
+				};
+			});
+
+			await chatUI.open();
+			await page.getByRole("button", { name: "Edit user message" }).click();
+			await page.getByRole("textbox", { name: "Edit message" }).fill("accepted inline once");
+			await page.getByRole("button", { name: "Send edited message" }).click();
+			await expect.poll(() => chatUI.requestsMatching("POST", "/edit").length).toBe(1);
+			await expect(page.getByRole("button", { name: "Finish clearing accepted edit" })).toBeEnabled();
+
+			await page.reload();
+			await expect(page.getByRole("button", { name: "Finish clearing accepted edit" })).toBeEnabled();
+			await expect(page.getByRole("alert")).toContainText("local draft couldn’t be cleared");
+			expect(chatUI.requestsMatching("POST", "/edit")).toHaveLength(1);
+
+			await page.evaluate(() => {
+				(window as typeof window & { __aoFailInlineDraftRemoval?: boolean }).__aoFailInlineDraftRemoval = false;
+			});
+			await page.getByRole("button", { name: "Finish clearing accepted edit" }).click();
+			await expect(page.getByRole("textbox", { name: "Edit message" })).toHaveCount(0);
+			expect(chatUI.requestsMatching("POST", "/edit")).toHaveLength(1);
+		});
+
+		test("reload reconciles a durable steer from conversation history without redispatch", async ({ chatUI, page }) => {
+			chatUI.conversation = {
+				...chatUI.conversation,
+				latestSequence: 1,
+				oldestSequence: 1,
+				turns: [turn("turn-running-steer", "running", { providerTurnId: "provider-running-steer" })],
+				messages: [
+					message("message-running-steer", "turn-running-steer", 1, "user", "Original running task"),
+				],
+			};
+			chatUI.deferNextSteerResponse();
+			try {
+				await chatUI.open();
+				const composer = page.getByRole("combobox", { name: "Message the agent" });
+				await composer.fill("snapshot-confirmed guidance");
+				await composer.press("Control+Enter");
+				await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/steer").length).toBe(1);
+				const clientMessageId = String(
+					(chatUI.requestsMatching("POST", "/conversation/steer")[0]?.body as Record<string, unknown>)
+						.clientMessageId ?? "",
+				);
+				expect(clientMessageId).not.toBe("");
+				chatUI.conversation.activities = [
+					{
+						kind: "activity",
+						id: "activity-confirmed-steer",
+						turnId: "turn-running-steer",
+						sequence: 2,
+						revision: 0,
+						activityKind: "system",
+						status: "completed",
+						summary: "snapshot-confirmed guidance",
+						detail: {
+							event: "steer",
+							origin: "human",
+							clientMessageId,
+						},
+						createdAt: "2026-08-25T09:00:00.000Z",
+					},
+				];
+				chatUI.conversation.latestSequence = 2;
+				const draftKey = `ao.chat.draft:${encodeURIComponent(chatUI.sessionId)}`;
+				await expect
+					.poll(() =>
+						page.evaluate((key) => {
+							const raw = localStorage.getItem(key);
+							return raw ? JSON.parse(raw) : null;
+						}, draftKey),
+					)
+					.toMatchObject({
+						composer: {
+							delivery: { clientMessageId, kind: "steer", state: "dispatching" },
+						},
+					});
+
+				await page.reload();
+				await expect
+					.poll(() => page.evaluate((key) => localStorage.getItem(key), draftKey))
+					.toBeNull();
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText("");
+				await expect(page.getByRole("button", { name: "Retry message safely" })).toHaveCount(0);
+				expect(chatUI.requestsMatching("POST", "/conversation/steer")).toHaveLength(1);
+			} finally {
+				chatUI.releaseDeferredSteerResponse();
+			}
 		});
 	});
 
