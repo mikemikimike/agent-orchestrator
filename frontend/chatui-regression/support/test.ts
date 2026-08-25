@@ -139,6 +139,7 @@ export class ChatUIRegressionHarness {
 	readonly requests: RecordedRequest[] = [];
 	readonly unexpectedRequests: RecordedRequest[] = [];
 	readonly consoleErrors: string[] = [];
+	readonly expectedConsoleErrors: string[] = [];
 	readonly pageErrors: string[] = [];
 
 	conversation: JsonObject;
@@ -155,6 +156,8 @@ export class ChatUIRegressionHarness {
 	private releaseEditResponse?: () => void;
 	private deferredSteerResponse?: Promise<void>;
 	private releaseSteerResponse?: () => void;
+	private nextSteerRefusal?: { code: string; message: string };
+	private expectedResourceFailures = 0;
 
 	private constructor(page: Page, options: ResolvedChatUIHarnessOptions) {
 		this.page = page;
@@ -197,7 +200,14 @@ export class ChatUIRegressionHarness {
 	private async install(): Promise<void> {
 		this.page.on("pageerror", (error) => this.pageErrors.push(error.stack || error.message));
 		this.page.on("console", (entry: ConsoleMessage) => {
-			if (entry.type() === "error") this.consoleErrors.push(entry.text());
+			if (entry.type() !== "error") return;
+			const message = entry.text();
+			if (this.expectedResourceFailures > 0 && message.startsWith("Failed to load resource:")) {
+				this.expectedResourceFailures -= 1;
+				this.expectedConsoleErrors.push(message);
+				return;
+			}
+			this.consoleErrors.push(message);
 		});
 
 		await this.page.emulateMedia({ reducedMotion: "reduce" });
@@ -382,6 +392,23 @@ export class ChatUIRegressionHarness {
 				if (deferred) {
 					this.deferredSteerResponse = undefined;
 					await deferred;
+				}
+				const refusal = this.nextSteerRefusal;
+				if (refusal) {
+					this.nextSteerRefusal = undefined;
+					this.expectedResourceFailures += 1;
+					await route
+						.fulfill({
+							status: 409,
+							json: {
+								error: "conflict",
+								code: refusal.code,
+								message: refusal.message,
+								requestId: "chatui-regression-steer-refusal",
+							},
+						})
+						.catch(() => undefined);
+					return;
 				}
 				await route
 					.fulfill({
@@ -573,6 +600,10 @@ export class ChatUIRegressionHarness {
 		this.releaseSteerResponse = undefined;
 	}
 
+	refuseNextSteer(code: string, message: string): void {
+		this.nextSteerRefusal = { code, message };
+	}
+
 	async setMode(mode: "chat" | "tui"): Promise<void> {
 		this.conversation.mode = mode;
 		this.transitionStatus.targetMode = mode === "chat" ? "tui" : "chat";
@@ -615,6 +646,7 @@ export class ChatUIRegressionHarness {
 		const evidence = {
 			consoleErrors: this.consoleErrors,
 			conversation: this.conversation,
+			expectedConsoleErrors: this.expectedConsoleErrors,
 			pageErrors: this.pageErrors,
 			requests: this.requests,
 			transitionStatus: this.transitionStatus,

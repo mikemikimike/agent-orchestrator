@@ -405,6 +405,66 @@ test.describe("ChatUI interface switching", () => {
 			expect(chatUI.requestsMatching("POST", "/edit")).toHaveLength(1);
 		});
 
+		test("typed steer refusal unlocks only its session draft and never redispatches after reload", async ({ chatUI, page }) => {
+			chatUI.conversation = {
+				...chatUI.conversation,
+				controller: "busy",
+				latestSequence: 1,
+				oldestSequence: 1,
+				turns: [turn("turn-refused-steer", "running", { providerTurnId: "provider-refused-steer" })],
+				messages: [
+					message("message-refused-steer", "turn-refused-steer", 1, "user", "Original running task"),
+				],
+			};
+			chatUI.refuseNextSteer(
+				"CHAT_NO_ACTIVE_TURN",
+				"there is no turn in flight to steer; send this as a message instead",
+			);
+
+			await chatUI.open();
+			const composer = page.getByRole("combobox", { name: "Message the agent" });
+			await composer.fill("send this normally instead");
+			await composer.press("Control+Enter");
+			await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/steer").length).toBe(1);
+
+			await expect(composer).toHaveText("send this normally instead");
+			await expect(composer).toHaveAttribute("contenteditable", "true");
+			await expect(page.getByText(/Send it as a message instead/)).toBeVisible();
+			await expect(page.getByRole("button", { name: "Retry message safely" })).toHaveCount(0);
+			const draftKey = `ao.chat.draft:${encodeURIComponent(chatUI.sessionId)}`;
+			await expect
+				.poll(() =>
+					page.evaluate((key) => {
+						const raw = localStorage.getItem(key);
+						return raw ? JSON.parse(raw) : null;
+					}, draftKey),
+				)
+				.toMatchObject({
+					sessionId: chatUI.sessionId,
+					composer: { text: "send this normally instead" },
+				});
+			expect(
+				await page.evaluate((key) => {
+					const raw = localStorage.getItem(key);
+					return raw ? JSON.parse(raw).composer.delivery : undefined;
+				}, draftKey),
+			).toBeUndefined();
+
+			await chatUI.navigateToSession(secondarySessionId);
+			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText("");
+			await chatUI.navigateToSession(chatUI.sessionId);
+			await page.reload();
+			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText(
+				"send this normally instead",
+			);
+			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute(
+				"contenteditable",
+				"true",
+			);
+			await expect(page.getByRole("button", { name: "Retry message safely" })).toHaveCount(0);
+			expect(chatUI.requestsMatching("POST", "/conversation/steer")).toHaveLength(1);
+		});
+
 		test("reload reconciles a durable steer from conversation history without redispatch", async ({ chatUI, page }) => {
 			chatUI.conversation = {
 				...chatUI.conversation,
