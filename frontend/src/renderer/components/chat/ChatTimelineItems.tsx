@@ -188,6 +188,7 @@ export function HumanMessage({
 	onEditStart,
 	onEditDraftChange,
 	onEditCancel,
+	onEditAbandonRecovery,
 	editPending = false,
 	editSendBlocked = false,
 	editRecoveryLabel,
@@ -213,6 +214,7 @@ export function HumanMessage({
 	onEditStart?: () => void;
 	onEditDraftChange?: (text: string) => void;
 	onEditCancel?: () => void;
+	onEditAbandonRecovery?: () => void;
 	editPending?: boolean;
 	editSendBlocked?: boolean;
 	editRecoveryLabel?: string;
@@ -240,6 +242,7 @@ export function HumanMessage({
 					error={editError}
 					onDraftChange={onEditDraftChange}
 					onCancel={() => onEditCancel?.()}
+					onAbandonRecovery={onEditAbandonRecovery}
 					onSend={(text) => {
 						if (!message.turnId || !onEdit) return;
 						return onEdit(message.turnId, text);

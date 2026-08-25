@@ -157,6 +157,7 @@ export class ChatUIRegressionHarness {
 	private deferredSteerResponse?: Promise<void>;
 	private releaseSteerResponse?: () => void;
 	private nextSteerRefusal?: { code: string; message: string };
+	private nextLostSteerRefusal?: { code: string; message: string };
 	private expectedResourceFailures = 0;
 
 	private constructor(page: Page, options: ResolvedChatUIHarnessOptions) {
@@ -214,6 +215,7 @@ export class ChatUIRegressionHarness {
 		const workers = [
 			{
 				id: this.sessionId,
+				createdAt: now,
 				provider: this.provider,
 				title: "ChatUI regression worker",
 				mode: this.options.mode,
@@ -224,6 +226,7 @@ export class ChatUIRegressionHarness {
 		if (this.secondarySessionId) {
 			workers.push({
 				id: this.secondarySessionId,
+				createdAt: now,
 				provider: this.provider,
 				title: "ChatUI regression secondary worker",
 				mode: "chat",
@@ -388,6 +391,14 @@ export class ChatUIRegressionHarness {
 				return;
 			}
 			if (method === "POST" && pathname.endsWith("/conversation/steer")) {
+				const lostRefusal = this.nextLostSteerRefusal;
+				if (lostRefusal) {
+					this.nextLostSteerRefusal = undefined;
+					this.nextSteerRefusal = lostRefusal;
+					this.expectedResourceFailures += 1;
+					await route.abort("connectionreset").catch(() => undefined);
+					return;
+				}
 				const deferred = this.deferredSteerResponse;
 				if (deferred) {
 					this.deferredSteerResponse = undefined;
@@ -602,6 +613,26 @@ export class ChatUIRegressionHarness {
 
 	refuseNextSteer(code: string, message: string): void {
 		this.nextSteerRefusal = { code, message };
+	}
+
+	loseNextSteerRefusal(code: string, message: string): void {
+		this.nextLostSteerRefusal = { code, message };
+	}
+
+	async recreateSession(createdAt: string): Promise<void> {
+		await this.page.evaluate(
+			({ id, provider, createdAt }) =>
+				window.__aoFakeAgent?.recreateWorker({
+					id,
+					provider,
+					createdAt,
+					title: "ChatUI regression worker",
+					mode: "chat",
+					status: "idle",
+					activity: "idle",
+				}),
+			{ id: this.sessionId, provider: this.provider, createdAt },
+		);
 	}
 
 	async setMode(mode: "chat" | "tui"): Promise<void> {

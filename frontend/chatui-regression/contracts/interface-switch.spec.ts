@@ -1,4 +1,4 @@
-import { expect, message, test, turn } from "../support/test";
+import { conversationSnapshot, expect, message, test, turn } from "../support/test";
 
 test.describe("ChatUI interface switching", () => {
 	test.describe("MQA-06 failed target-history checkpoint", () => {
@@ -343,8 +343,9 @@ test.describe("ChatUI interface switching", () => {
 				);
 				await expect(page.getByRole("textbox", { name: "Edit message" })).toBeDisabled();
 				await expect(page.getByRole("alert")).toContainText(
-					"delivery wasn’t confirmed before Chat restarted",
+					"may already have been delivered before Chat restarted",
 				);
+				await expect(page.getByRole("alert")).toContainText("may duplicate it");
 				await expect(page.getByRole("button", { name: "Retry edit safely" })).toBeEnabled();
 				expect(chatUI.requestsMatching("POST", "/edit")).toHaveLength(1);
 
@@ -529,6 +530,161 @@ test.describe("ChatUI interface switching", () => {
 				expect(chatUI.requestsMatching("POST", "/conversation/steer")).toHaveLength(1);
 			} finally {
 				chatUI.releaseDeferredSteerResponse();
+			}
+		});
+
+		test("explicitly abandons uncertain steer recovery after a cold renderer reload", async ({ chatUI, page }) => {
+			chatUI.conversation = {
+				...chatUI.conversation,
+				controller: "busy",
+				latestSequence: 1,
+				oldestSequence: 1,
+				turns: [turn("turn-abandon-steer", "running", { providerTurnId: "provider-abandon-steer" })],
+				messages: [
+					message("message-abandon-steer", "turn-abandon-steer", 1, "user", "Original running task"),
+				],
+			};
+			chatUI.deferNextSteerResponse();
+			try {
+				await chatUI.open();
+				const composer = page.getByRole("combobox", { name: "Message the agent" });
+				await composer.fill("possibly delivered guidance");
+				await composer.press("Control+Enter");
+				await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/steer").length).toBe(1);
+
+				await page.reload();
+				await expect(page.getByRole("alert")).toContainText("may already have received this guidance");
+				await expect(page.getByRole("alert")).toContainText("may duplicate it");
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute(
+					"contenteditable",
+					"false",
+				);
+				expect(chatUI.requestsMatching("POST", "/conversation/steer")).toHaveLength(1);
+
+				await page.getByRole("button", { name: "Abandon recovery" }).click();
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute(
+					"contenteditable",
+					"true",
+				);
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText(
+					"possibly delivered guidance",
+				);
+				expect(chatUI.requestsMatching("POST", "/conversation/steer")).toHaveLength(1);
+			} finally {
+				chatUI.releaseDeferredSteerResponse();
+			}
+		});
+
+		test("explicitly abandons uncertain inline-edit recovery after a cold renderer reload", async ({ chatUI, page }) => {
+			chatUI.conversation = {
+				...chatUI.conversation,
+				latestSequence: 1,
+				oldestSequence: 1,
+				turns: [turn("turn-abandon-edit", "completed", { providerTurnId: "provider-abandon-edit" })],
+				messages: [
+					message("message-abandon-edit", "turn-abandon-edit", 1, "user", "Original edit target", {
+						editAvailable: true,
+					}),
+				],
+			};
+			chatUI.deferNextEditResponse();
+			try {
+				await chatUI.open();
+				await page.getByRole("button", { name: "Edit user message" }).click();
+				await page.getByRole("textbox", { name: "Edit message" }).fill("possibly delivered edit");
+				await page.getByRole("button", { name: "Send edited message" }).click();
+				await expect.poll(() => chatUI.requestsMatching("POST", "/edit").length).toBe(1);
+
+				await page.reload();
+				await expect(page.getByRole("textbox", { name: "Edit message" })).toBeDisabled();
+				await expect(page.getByRole("alert")).toContainText("may already have been delivered");
+				await expect(page.getByRole("alert")).toContainText("may duplicate it");
+				expect(chatUI.requestsMatching("POST", "/edit")).toHaveLength(1);
+
+				await page.getByRole("button", { name: "Abandon edit recovery" }).click();
+				await expect(page.getByRole("textbox", { name: "Edit message" })).toBeEnabled();
+				await expect(page.getByRole("textbox", { name: "Edit message" })).toHaveValue(
+					"possibly delivered edit",
+				);
+				expect(chatUI.requestsMatching("POST", "/edit")).toHaveLength(1);
+			} finally {
+				chatUI.releaseDeferredEditResponse();
+			}
+		});
+
+		test("replays a lost interface-transition refusal and unlocks without delivery", async ({ chatUI, page }) => {
+			chatUI.conversation = {
+				...chatUI.conversation,
+				controller: "busy",
+				latestSequence: 1,
+				oldestSequence: 1,
+				turns: [turn("turn-transition-steer", "running", { providerTurnId: "provider-transition-steer" })],
+				messages: [
+					message("message-transition-steer", "turn-transition-steer", 1, "user", "Original running task"),
+				],
+			};
+			chatUI.loseNextSteerRefusal(
+				"CHAT_INTERFACE_TRANSITION",
+				"the session is switching interfaces",
+			);
+			await chatUI.open();
+			const composer = page.getByRole("combobox", { name: "Message the agent" });
+			await composer.fill("wait until the switch completes");
+			await composer.press("Control+Enter");
+			await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/steer").length).toBe(1);
+			await expect(page.getByRole("alert")).toContainText("may already have received");
+
+			await page.reload();
+			await page.getByRole("button", { name: "Retry message safely" }).click();
+			await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/steer").length).toBe(2);
+			const attempts = chatUI.requestsMatching("POST", "/conversation/steer");
+			expect((attempts[0]?.body as Record<string, unknown>).clientMessageId).toBe(
+				(attempts[1]?.body as Record<string, unknown>).clientMessageId,
+			);
+			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute(
+				"contenteditable",
+				"true",
+			);
+			await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText(
+				"wait until the switch completes",
+			);
+			await expect(page.getByText(/session is switching interfaces/i)).toBeVisible();
+			await expect(page.getByRole("button", { name: "Retry message safely" })).toHaveCount(0);
+		});
+
+		test("purges unresolved drafts when an authoritative session id is recreated", async ({ chatUI, page }) => {
+			chatUI.deferNextMessageResponse();
+			try {
+				await chatUI.open();
+				await page.locator('input[type="file"]').setInputFiles({
+					name: "old-incarnation.png",
+					mimeType: "image/png",
+					buffer: Buffer.from("old-incarnation-staged-bytes"),
+				});
+				await expect(page.getByRole("button", { name: "Remove old-incarnation.png" })).toBeVisible();
+				await page.getByRole("combobox", { name: "Message the agent" }).fill("old incarnation draft");
+				await page.getByRole("button", { name: "Send message" }).click();
+				await expect.poll(() => chatUI.requestsMatching("POST", "/conversation/messages").length).toBe(1);
+
+				chatUI.conversation = conversationSnapshot(chatUI.sessionId, {
+					conversationId: `replacement-${chatUI.sessionId}`,
+				});
+				await chatUI.recreateSession("2026-08-26T12:00:00.000Z");
+				await page.reload();
+
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveText("");
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute(
+					"contenteditable",
+					"true",
+				);
+				await expect(page.getByRole("button", { name: "Remove old-incarnation.png" })).toHaveCount(0);
+				await expect(page.getByRole("button", { name: "Retry message safely" })).toHaveCount(0);
+				expect(chatUI.requestsMatching("POST", "/conversation/messages")).toHaveLength(1);
+				const draftKey = `ao.chat.draft:${encodeURIComponent(chatUI.sessionId)}`;
+				await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), draftKey)).toBeNull();
+				expect(chatUI.requestsMatching("POST", "/attachments")).toHaveLength(1);
+			} finally {
+				chatUI.releaseDeferredMessageResponse();
 			}
 		});
 	});

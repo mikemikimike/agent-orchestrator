@@ -11,6 +11,7 @@ import { coerceUiSettings, DEFAULT_UI_SETTINGS } from "../../src/shared/ui-local
 export type FakeWorker = {
 	id: string;
 	title: string;
+	createdAt?: string;
 	mode?: "chat" | "tui";
 	provider?: string;
 	branch?: string;
@@ -39,6 +40,7 @@ export type FakeAgentOptions = {
 export type FakeAgentController = {
 	snapshot: () => unknown[];
 	createWorker: (worker: FakeWorker) => void;
+	recreateWorker: (worker: FakeWorker) => void;
 	removeWorker: (id: string) => void;
 	setStatus: (id: string, status: string, activity?: string) => void;
 	setMode: (id: string, mode: "chat" | "tui", terminalHandleId?: string) => void;
@@ -84,6 +86,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 
 			const nowIso = new Date().toISOString();
 			type Session = Record<string, unknown>;
+			const incarnationKey = (id: string) => `__ao_fake_session_incarnation:${id}`;
 			const makeWorker = (w: (typeof workers)[number]): Session => ({
 				id: w.id,
 				terminalHandleId: (w.mode ?? "tui") === "tui" ? `${w.id}/terminal_0` : undefined,
@@ -95,7 +98,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				mode: w.mode ?? "tui",
 				branch: w.branch ?? `session/${w.id}`,
 				status: w.status ?? "working",
-				createdAt: nowIso,
+				createdAt: localStorage.getItem(incarnationKey(w.id)) ?? w.createdAt ?? nowIso,
 				updatedAt: new Date().toISOString(),
 				activity: { state: w.activity ?? "active", lastActivityAt: new Date().toISOString() },
 				previewUrl: w.previewUrl,
@@ -213,6 +216,15 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				snapshot: () => JSON.parse(JSON.stringify(state.workspaces)),
 				createWorker: (w) => {
 					if (!findSession(w.id)) (project.sessions as Session[]).push(makeWorker(w));
+					pushWorkspaces("session_created");
+				},
+				recreateWorker: (w) => {
+					if (w.createdAt) localStorage.setItem(incarnationKey(w.id), w.createdAt);
+					const sessions = project.sessions as Session[];
+					const replacement = makeWorker(w);
+					const index = sessions.findIndex((session) => session.id === w.id);
+					if (index >= 0) sessions.splice(index, 1, replacement);
+					else sessions.push(replacement);
 					pushWorkspaces("session_created");
 				},
 				removeWorker: (id) => {
