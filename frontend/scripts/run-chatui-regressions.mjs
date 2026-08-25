@@ -106,7 +106,12 @@ export const goContractDefinitions = Object.freeze([
 			"ChatUI conversation integrity › MQA-07 synthetic root branch › activates the advertised synthetic root as one encoded route segment",
 	},
 	{
-		name: "TestChatUIRegressionTUIToChatRetriesFreshTargetAfterUnsettledHistory",
+		name: "TestChatUIRegressionTUIToChatProviderHistoryRecoveryIsScoped",
+		playwrightMarker:
+			"ChatUI interface switching › MQA-06 failed target-history checkpoint › offers a retryable, announced action for the interface-switch failure",
+	},
+	{
+		name: "TestChatUIRegressionProviderHistoryRecoveryDeduplicatesReplayWithoutWorktreeMutation",
 		playwrightMarker:
 			"ChatUI interface switching › MQA-06 failed target-history checkpoint › offers a retryable, announced action for the interface-switch failure",
 	},

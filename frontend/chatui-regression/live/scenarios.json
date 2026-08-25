@@ -678,7 +678,7 @@
     },
     {
       "id": "MQA-06",
-      "title": "Unsettled Terminal-to-Chat history converges without poisoning the session",
+      "title": "Legacy poisoned checkpoints require explicit, scoped provider-history recovery",
       "severity": "P1",
       "lane": "deterministic-contract",
       "supplementalLanes": [
@@ -702,9 +702,14 @@
       ],
       "preconditions": [
         {
-          "id": "deterministic-fault",
+          "id": "legacy-poisoned-checkpoint",
           "kind": "fault-injection",
-          "value": "first-fresh-chat-target-returns-history-unsettled"
+          "value": "legacy-user-and-assistant-checkpoints-mismatch-provider-replay"
+        },
+        {
+          "id": "trusted-checkpoint-control",
+          "kind": "fault-injection",
+          "value": "trusted-current-generation-text-mismatch-remains-non-recoverable"
         },
         {
           "id": "live-claude",
@@ -714,82 +719,153 @@
       ],
       "actions": [
         {
-          "id": "start-busy-terminal-turn",
-          "operation": "send_terminal_input",
+          "id": "snapshot-worktree-before",
+          "operation": "snapshot_filesystem_metadata",
           "arguments": {
-            "text": "Run a bounded wait, then reply MQA06_INTERRUPT_DONE."
+            "scopes": [
+              {
+                "name": "fixture",
+                "capture": "git-status-and-diff"
+              }
+            ],
+            "label": "before-provider-history-recovery"
           }
         },
         {
-          "id": "stop-now-to-chat",
+          "id": "strict-switch-to-chat",
           "operation": "request_interface_switch",
           "arguments": {
             "target": "chat",
-            "policy": "interrupt"
+            "policy": "interrupt",
+            "historyPolicy": "strict"
           }
         },
         {
-          "id": "wait-for-convergence",
+          "id": "wait-for-legacy-mismatch",
           "operation": "wait_for_interface_transition",
           "arguments": {
-            "state": "terminal",
-            "allowActionableFailure": true
+            "state": "failed",
+            "errorCode": "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH"
           }
         },
         {
-          "id": "retry-if-required",
+          "id": "ordinary-retry-remains-closed",
           "operation": "retry_interface_transition",
           "arguments": {
-            "requireFreshTargetAttempt": true
+            "historyPolicy": "strict",
+            "expectState": "failed",
+            "expectErrorCode": "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH"
           }
         },
         {
-          "id": "live-restart-check",
+          "id": "restart-before-explicit-recovery",
           "operation": "restart_packaged_app",
           "arguments": {
             "onlyInLanes": [
               "packaged-electron-live-canary"
             ],
-            "retryAfterRestart": true
+            "expectRecoveryActionToRemainAvailable": true
+          }
+        },
+        {
+          "id": "use-provider-history",
+          "operation": "retry_interface_transition",
+          "arguments": {
+            "historyPolicy": "provider_history",
+            "expectState": "completed"
+          }
+        },
+        {
+          "id": "snapshot-replayed-conversation",
+          "operation": "snapshot_api",
+          "arguments": {
+            "resources": [
+              "conversation-turns",
+              "conversation-messages",
+              "interface-transition"
+            ],
+            "emitDuplicateConversationChangedEvents": 2
+          }
+        },
+        {
+          "id": "trusted-mismatch-control",
+          "operation": "repeat_scenario_branch",
+          "arguments": {
+            "from": "trusted-checkpoint-control",
+            "historyPolicy": "provider_history",
+            "expectRejectedBeforeSourceStop": true
+          }
+        },
+        {
+          "id": "snapshot-worktree-after",
+          "operation": "snapshot_filesystem_metadata",
+          "arguments": {
+            "scopes": [
+              {
+                "name": "fixture",
+                "capture": "git-status-and-diff"
+              }
+            ],
+            "label": "after-provider-history-recovery"
           }
         }
       ],
       "expectedResults": [
         {
-          "id": "fresh-retry",
-          "assertion": "unsettled_target_is_retried_with_fresh_observation",
-          "description": "A transient unsettled history response cannot permanently poison later target starts."
+          "id": "strict-stays-closed",
+          "assertion": "legacy_text_mismatch_remains_closed_under_strict_retry",
+          "description": "The poisoned legacy user and assistant checkpoints fail both the initial strict switch and an ordinary strict retry."
+        },
+        {
+          "id": "explicit-recovery-is-scoped",
+          "assertion": "provider_history_recovery_waives_only_legacy_text",
+          "description": "Only the explicit Use provider history action admits the same native thread, including after restart of that exact recovery saga."
+        },
+        {
+          "id": "trusted-stays-closed",
+          "assertion": "trusted_checkpoint_rejects_provider_history_recovery",
+          "description": "Trusted current-generation text, AO high-water, and native identity mismatches cannot be bypassed with provider authority."
+        },
+        {
+          "id": "replay-deduplicated",
+          "assertion": "provider_replay_is_deduplicated",
+          "description": "Repeated change events still render exactly one imported turn with one user and one assistant message."
         },
         {
           "id": "one-controller",
           "assertion": "at_most_one_chat_target_controller_exists",
-          "description": "Retries converge without duplicate target controllers."
+          "description": "Strict and explicit recovery attempts never create overlapping target controllers."
         },
         {
-          "id": "recoverable-source",
-          "assertion": "source_remains_usable_or_failure_is_actionable",
-          "description": "An exhausted automatic retry preserves usable TUI and exposes a safe retry that can later succeed."
+          "id": "fixture-protected",
+          "assertion": "fixture_has_no_unrequested_change",
+          "description": "The source worktree status and diff are identical before and after every recovery branch."
         }
       ],
       "evidence": [
         {
           "kind": "transition-phase-log",
-          "checkpoint": "all-attempts",
+          "checkpoint": "initial-strict-ordinary-retry-provider-recovery-and-trusted-control",
           "required": true
         },
         {
           "kind": "controller-count",
-          "checkpoint": "after-each-target-attempt",
+          "checkpoint": "after-each-strict-and-provider-history-attempt",
           "required": true
         },
         {
           "kind": "api-snapshot",
-          "checkpoint": "transition-before-after-retry",
+          "checkpoint": "replayed-turns-messages-and-transition-policy",
           "required": true
         },
         {
           "kind": "screenshot",
-          "checkpoint": "recovery-or-actionable-failure",
+          "checkpoint": "ao-2l-retry-provider-history-and-stay-actions",
+          "required": true
+        },
+        {
+          "kind": "git-status-and-diff",
+          "checkpoint": "before-after-all-recovery-branches",
           "required": true
         }
       ]

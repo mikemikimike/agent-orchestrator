@@ -4,123 +4,109 @@ package sessionmanager
 
 import (
 	"context"
-	"fmt"
-	"sync"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// unsettledThenReadyChat models two fresh observations of the same provider
-// conversation. The first immutable history snapshot is not settled; the next
-// target start sees settled history and can publish its controller.
-type unsettledThenReadyChat struct {
-	*transitionChat
-
-	mu                   sync.Mutex
-	starts               []ChatStart
-	activeControllers    int
-	maxActiveControllers int
-}
-
-func (c *unsettledThenReadyChat) StartChat(_ context.Context, cfg ChatStart) (ChatStarted, error) {
-	c.mu.Lock()
-	c.starts = append(c.starts, cfg)
-	startNumber := len(c.starts)
-	c.transitionChat.start = cfg
-	*c.transitionChat.log = append(*c.transitionChat.log, "start:chat")
-	c.mu.Unlock()
-
-	if startNumber == 1 {
-		return ChatStarted{}, ports.ErrChatHistoryUnsettled
-	}
-
-	started := ChatStarted{
-		ProviderConversationID: cfg.ProviderConversationID,
-		ControllerGeneration:   "chat-generation",
-	}
-	c.mu.Lock()
-	c.activeControllers++
-	if c.activeControllers > c.maxActiveControllers {
-		c.maxActiveControllers = c.activeControllers
-	}
-	c.mu.Unlock()
-	if cfg.ControllerReady != nil {
-		if _, err := cfg.ControllerReady(started); err != nil {
-			return ChatStarted{}, err
-		}
-	}
-	return started, nil
-}
-
-func (c *unsettledThenReadyChat) StopChat(_ context.Context, _ domain.SessionID) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	*c.transitionChat.log = append(*c.transitionChat.log, "stop:chat")
-	if c.activeControllers > 0 {
-		c.activeControllers--
-	}
-	return nil
-}
-
-func (c *unsettledThenReadyChat) snapshot() ([]ChatStart, int, int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]ChatStart(nil), c.starts...), c.activeControllers, c.maxActiveControllers
-}
-
-// A frozen ACP history view is one observation, not a permanent verdict on the
-// native conversation. Retrying target admission must create a fresh observation
-// inside the same durable transition, while the stopped TUI remains fenced and at
-// most one target controller owns the session.
-func TestChatUIRegressionTUIToChatRetriesFreshTargetAfterUnsettledHistory(t *testing.T) {
+// MQA-06 reproduces a legacy user+assistant checkpoint that provider replay can
+// never reach. Strict retries remain closed; only explicit provider-history
+// consent admits the same native thread, and that consent cannot be replayed
+// against a trusted mismatch. The source worktree is an invariant throughout.
+func TestChatUIRegressionTUIToChatProviderHistoryRecoveryIsScoped(t *testing.T) {
 	manager, store, runtime, baseChat, _ := newTransitionManager(t, domain.SessionModeTUI)
-	chat := &unsettledThenReadyChat{transitionChat: baseChat}
+	chat := &checkpointAwareHistoryTransitionChat{transitionChat: baseChat, store: store}
 	manager.chat = chat
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	rec := store.sessions["session-1"]
+	rec.Metadata.LatestUserPrompt = "poisoned user checkpoint"
+	rec.Metadata.LatestAssistantUpdate = "poisoned assistant checkpoint"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointLegacy
+	store.sessions[rec.ID] = rec
 
-	transition, err := manager.StartInterfaceTransition(
-		context.Background(),
-		"session-1",
-		domain.SessionModeChat,
-		domain.SessionInterfaceTransitionInterrupt,
-	)
+	worktree := t.TempDir()
+	sentinel := filepath.Join(worktree, "unchanged.txt")
+	if err := os.WriteFile(sentinel, []byte("must remain unchanged\n"), 0o644); err != nil {
+		t.Fatalf("seed worktree sentinel: %v", err)
+	}
+	assertWorktreeUnchanged := func() {
+		got, err := os.ReadFile(sentinel)
+		if err != nil || string(got) != "must remain unchanged\n" {
+			t.Fatalf("worktree sentinel changed: content=%q err=%v", got, err)
+		}
+	}
+
+	strict, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
+
 	if err != nil {
-		t.Fatalf("StartInterfaceTransition: %v", err)
+		t.Fatalf("start strict MQA-06 transition: %v", err)
 	}
-	settled := awaitTransition(t, store, transition.ID)
-	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
-		t.Fatalf("transition = %+v, want the same durable transition to complete after a fresh target retry", settled)
+	strict = awaitTransition(t, store, strict.ID)
+	if strict.ErrorCode != "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH" {
+		t.Fatalf("strict transition = %+v, want legacy text-only mismatch", strict)
 	}
-	if got := store.sessions["session-1"].Mode; got != domain.SessionModeChat {
-		t.Fatalf("session mode = %q, want %q", got, domain.SessionModeChat)
-	}
+	assertWorktreeUnchanged()
 
-	starts, active, maxActive := chat.snapshot()
-	if len(starts) != 2 {
-		t.Fatalf("target starts = %d, want 2 fresh observations", len(starts))
+	confirmRestoredOwner := func() {
+		current := store.sessions["session-1"]
+		current.Metadata.AgentSessionIDLaunchID = current.Metadata.RuntimeLaunchID
+		store.sessions[current.ID] = current
 	}
-	for i, start := range starts {
-		if start.ProviderConversationID != "native-1" {
-			t.Fatalf("target start %d provider conversation = %q, want native-1", i+1, start.ProviderConversationID)
-		}
-		if !start.RequireNativeHistory {
-			t.Fatalf("target start %d did not require native history", i+1)
-		}
+	confirmRestoredOwner()
+	ordinary, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+
+	if err != nil {
+		t.Fatalf("start strict retry: %v", err)
 	}
-	if maxActive > 1 {
-		t.Fatalf("maximum concurrent target controllers = %d, want at most 1", maxActive)
+	ordinary = awaitTransition(t, store, ordinary.ID)
+	if ordinary.ErrorCode != "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH" {
+		t.Fatalf("strict retry = %+v, want the same closed mismatch", ordinary)
 	}
-	if active != 1 {
-		t.Fatalf("active target controllers = %d, want 1 after completion", active)
+	assertWorktreeUnchanged()
+
+	confirmRestoredOwner()
+	recovery, err := manager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain,
+		domain.SessionInterfaceTransitionHistoryProvider)
+	if err != nil {
+		t.Fatalf("start provider-history recovery: %v", err)
 	}
-	if runtime.created != 0 {
-		t.Fatalf("source TUI was restarted %d times during target retry, want 0", runtime.created)
+	recovery = awaitTransition(t, store, recovery.ID)
+	if recovery.Phase != domain.SessionInterfaceTransitionCompleted ||
+		recovery.HistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider {
+		t.Fatalf("provider-history recovery = %+v, want completed scoped consent", recovery)
 	}
-	if runtime.destroyed != 1 {
-		t.Fatalf("source TUI was stopped %d times, want exactly 1 before target admission", runtime.destroyed)
+	assertWorktreeUnchanged()
+
+	// A separate trusted mismatch must remain closed and must not even stop the
+	// source when a caller attempts to reuse provider-history authority.
+	trustedManager, trustedStore, trustedRuntime, trustedChat, _ := newTransitionManager(t, domain.SessionModeTUI)
+	trustedRuntime.aliveByHandle = map[string]bool{"runtime-1": true}
+	trustedChat.startErr = &ports.ChatHistoryUnsettledError{Dimensions: []ports.ChatHistoryMismatchDimension{
+		ports.ChatHistoryMismatchTrustedUserText,
+	}}
+	trusted, err := trustedManager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
+
+	if err != nil {
+		t.Fatalf("start trusted mismatch: %v", err)
 	}
-	if got := fmt.Sprint(*runtime.log); got != "[interrupt:tui:runtime-1 stop:tui:runtime-1 start:chat start:chat]" {
-		t.Fatalf("controller order = %s, want source stop before both fresh target observations", got)
+	trusted = awaitTransition(t, trustedStore, trusted.ID)
+	if trusted.ErrorCode != "TARGET_HISTORY_UNSETTLED" {
+		t.Fatalf("trusted mismatch = %+v, want non-recoverable history error", trusted)
 	}
+	destroyed := trustedRuntime.destroyed
+	_, err = trustedManager.StartInterfaceTransition(context.Background(), "session-1",
+		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain,
+		domain.SessionInterfaceTransitionHistoryProvider)
+	if !errors.Is(err, ErrInterfaceProviderHistoryRecoveryUnavailable) {
+		t.Fatalf("trusted provider-history request = %v, want unavailable", err)
+	}
+	if trustedRuntime.destroyed != destroyed {
+		t.Fatalf("rejected trusted recovery touched source runtime: %d -> %d", destroyed, trustedRuntime.destroyed)
+	}
+	assertWorktreeUnchanged()
 }

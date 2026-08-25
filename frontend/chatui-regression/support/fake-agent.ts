@@ -51,6 +51,7 @@ export type FakeAgentController = {
 		type?: string;
 		sessionId?: string;
 		conversationId?: string;
+		interfaceTransitionId?: string;
 	}) => void;
 	notify: (n: { id: string; type: string; title: string; body?: string; sessionId?: string }) => void;
 };
@@ -276,6 +277,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					type = "session_updated",
 					sessionId,
 					conversationId,
+					interfaceTransitionId,
 				}) => {
 					const stream =
 						type === "workspace_changed" && sessionId
@@ -286,7 +288,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 						type,
 						JSON.stringify({
 							sessionId,
-							payload: { conversationId },
+							payload: { conversationId, interfaceTransitionId },
 						}),
 					);
 				},

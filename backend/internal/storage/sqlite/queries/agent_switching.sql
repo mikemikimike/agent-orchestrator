@@ -260,9 +260,13 @@ UPDATE sessions SET
     agent_session_id_launch_id = sqlc.arg(agent_session_id_launch_id),
     latest_user_prompt = sqlc.arg(latest_user_prompt),
     latest_assistant_update = sqlc.arg(latest_assistant_update),
+    conversation_checkpoint_state = sqlc.arg(conversation_checkpoint_state),
+    conversation_checkpoint_generation = sqlc.arg(conversation_checkpoint_generation),
+    conversation_checkpoint_native_id = sqlc.arg(conversation_checkpoint_native_id),
     native_transcript_path = sqlc.arg(native_transcript_path),
     updated_at = sqlc.arg(updated_at)
 WHERE sessions.id = sqlc.arg(id)
+  AND sessions.updated_at = sqlc.arg(expected_updated_at)
   AND sessions.is_terminated = 0
   AND sessions.harness = sqlc.arg(expected_harness)
   AND sessions.session_mode = sqlc.arg(expected_session_mode)
@@ -334,6 +338,9 @@ UPDATE sessions SET
     runtime_launch_id = sqlc.arg(target_generation_id),
     agent_session_id = sqlc.arg(target_native_session_id),
     agent_session_id_launch_id = sqlc.arg(target_generation_id),
+    conversation_checkpoint_state = 'empty',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
     native_transcript_path = sqlc.arg(target_native_transcript_path),
     updated_at = sqlc.arg(activated_at)
 WHERE id = sqlc.arg(session_id)
@@ -353,6 +360,9 @@ UPDATE sessions SET
     runtime_launch_id = '',
     agent_session_id = sqlc.arg(target_native_session_id),
     agent_session_id_launch_id = '',
+    conversation_checkpoint_state = 'empty',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
     native_transcript_path = '',
     provider_conversation_id = sqlc.arg(provider_conversation_id),
     controller_generation = sqlc.arg(controller_generation),

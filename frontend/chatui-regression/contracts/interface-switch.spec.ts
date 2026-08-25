@@ -19,6 +19,8 @@ test.describe("ChatUI interface switching", () => {
 		});
 
 		test("offers a retryable, announced action for the interface-switch failure", async ({ chatUI, page }) => {
+			chatUI.workspaceFiles = [{ path: "src/unchanged.ts", status: "modified" }];
+			const worktreeBefore = JSON.stringify(chatUI.workspaceFiles);
 			chatUI.transitionStatus = {
 				supported: true,
 				targetMode: "chat",
@@ -28,9 +30,11 @@ test.describe("ChatUI interface switching", () => {
 					sourceMode: "tui",
 					targetMode: "chat",
 					policy: "drain",
+					historyPolicy: "strict",
 					phase: "failed",
-					errorCode: "TARGET_HISTORY_UNSETTLED",
-					errorDetail: "Interface switch failed (AO-2L): target history is not settled.",
+					errorCode: "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH",
+					errorDetail:
+						"Interface switch failed (AO-2L): poisoned legacy user and assistant checkpoints did not match provider history.",
 					createdAt: "2026-08-25T09:00:00.000Z",
 					updatedAt: "2026-08-25T09:00:01.000Z",
 					completedAt: "2026-08-25T09:00:01.000Z",
@@ -38,18 +42,54 @@ test.describe("ChatUI interface switching", () => {
 			};
 
 			await chatUI.open();
+			await expect(page.locator('[data-terminal-activation-phase="visible"]')).toBeVisible();
 
 			const failure = page.getByText(/Interface switch failed \(AO-2L\)/);
 			await expect(failure).toBeVisible();
 			const retry = page.getByRole("button", { name: "Retry switch to Chat UI" });
+			const providerHistory = page.getByRole("button", {
+				name: "Use provider history and switch",
+			});
 			await Promise.all([
 				expect.soft(page.getByRole("alert").filter({ hasText: "AO-2L" })).toBeVisible(),
 				expect.soft(retry).toBeVisible(),
+				expect.soft(providerHistory).toBeVisible(),
 			]);
 			if ((await retry.count()) === 0) return;
 			await retry.click();
 			await expect.poll(() => chatUI.requestsMatching("POST", "/interface-transition").length).toBe(1);
 			expect(chatUI.requestsMatching("POST", "/interface-transition")[0]?.body).toMatchObject({
+				historyPolicy: "strict",
+				policy: "drain",
+				targetMode: "chat",
+			});
+
+			// The strict retry must remain closed on the same poisoned dimensions.
+			chatUI.transitionStatus = {
+				supported: true,
+				targetMode: "chat",
+				transition: {
+					id: "transition-history-strict-retry",
+					sessionId: chatUI.sessionId,
+					sourceMode: "tui",
+					targetMode: "chat",
+					policy: "drain",
+					historyPolicy: "strict",
+					phase: "failed",
+					errorCode: "TARGET_HISTORY_UNTRUSTED_TEXT_MISMATCH",
+					errorDetail: "Interface switch failed (AO-2L): legacy text mismatch remains.",
+					createdAt: "2026-08-25T09:00:02.000Z",
+					updatedAt: "2026-08-25T09:00:03.000Z",
+					completedAt: "2026-08-25T09:00:03.000Z",
+				},
+			};
+			await chatUI.emitCDC();
+			await expect(providerHistory).toBeVisible();
+
+			await providerHistory.click();
+			await expect.poll(() => chatUI.requestsMatching("POST", "/interface-transition").length).toBe(2);
+			expect(chatUI.requestsMatching("POST", "/interface-transition")[1]?.body).toMatchObject({
+				historyPolicy: "provider_history",
 				policy: "drain",
 				targetMode: "chat",
 			});
@@ -63,15 +103,68 @@ test.describe("ChatUI interface switching", () => {
 					sourceMode: "tui",
 					targetMode: "chat",
 					policy: "drain",
+					historyPolicy: "provider_history",
 					phase: "completed",
 					createdAt: "2026-08-25T09:00:00.000Z",
 					updatedAt: "2026-08-25T09:00:02.000Z",
 					completedAt: "2026-08-25T09:00:02.000Z",
 				},
 			};
+			chatUI.conversation = {
+				...chatUI.conversation,
+				latestSequence: 2,
+				turns: [turn("turn-provider-history", "completed")],
+				messages: [
+					message("message-provider-user", "turn-provider-history", 1, "user", "Provider replay user"),
+					message(
+						"message-provider-assistant",
+						"turn-provider-history",
+						2,
+						"assistant",
+						"Provider replay assistant",
+					),
+				],
+			};
 			await chatUI.setMode("chat");
 			await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
-			expect(chatUI.requestsMatching("POST", "/interface-transition")).toHaveLength(1);
+			await chatUI.emitCDC("conversation_updated");
+			await chatUI.emitCDC("conversation_updated");
+			await expect(page.getByText("Provider replay user")).toHaveCount(1);
+			await expect(page.getByText("Provider replay assistant")).toHaveCount(1);
+
+			// A trusted current-generation mismatch never exposes provider authority.
+			await chatUI.setMode("tui");
+			await expect(page.getByTestId("terminal-interaction-surface")).toBeVisible();
+			await expect(page.locator('[data-terminal-activation-phase="visible"]')).toBeVisible();
+			chatUI.transitionStatus = {
+				supported: true,
+				targetMode: "chat",
+				transition: {
+					id: "transition-trusted-history",
+					sessionId: chatUI.sessionId,
+					sourceMode: "tui",
+					targetMode: "chat",
+					policy: "drain",
+					historyPolicy: "strict",
+					phase: "failed",
+					errorCode: "TARGET_HISTORY_UNSETTLED",
+					errorDetail: "Interface switch failed (AO-2L): trusted current-turn text did not match.",
+					createdAt: "2026-08-25T09:00:04.000Z",
+					updatedAt: "2026-08-25T09:00:05.000Z",
+					completedAt: "2026-08-25T09:00:05.000Z",
+				},
+			};
+			await chatUI.emitCDC();
+			await expect(page.getByRole("alert").filter({ hasText: "trusted current-turn" })).toBeVisible();
+			await expect(
+				page.getByRole("button", { name: "Use provider history and switch" }),
+			).toHaveCount(0);
+			await page.getByRole("button", { name: "Retry switch to Chat UI" }).click();
+			await expect.poll(() => chatUI.requestsMatching("POST", "/interface-transition").length).toBe(3);
+			expect(chatUI.requestsMatching("POST", "/interface-transition")[2]?.body).toMatchObject({
+				historyPolicy: "strict",
+			});
+			expect(JSON.stringify(chatUI.workspaceFiles)).toBe(worktreeBefore);
 		});
 	});
 

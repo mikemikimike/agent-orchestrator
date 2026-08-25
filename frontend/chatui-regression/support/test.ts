@@ -514,6 +514,7 @@ export class ChatUIRegressionHarness {
 					sourceMode: this.options.mode,
 					targetMode: body?.targetMode ?? "tui",
 					policy: body?.policy ?? "drain",
+					historyPolicy: body?.historyPolicy ?? "strict",
 					phase: "requested",
 					createdAt: now,
 					updatedAt: now,
@@ -690,12 +691,20 @@ export class ChatUIRegressionHarness {
 
 	async emitCDC(type = "session_updated"): Promise<void> {
 		await this.page.evaluate(
-			({ type, sessionId, conversationId }) =>
-				window.__aoFakeAgent?.emitCDC({ type, sessionId, conversationId }),
+			({ type, sessionId, conversationId, interfaceTransitionId }) =>
+				window.__aoFakeAgent?.emitCDC({
+					type,
+					sessionId,
+					conversationId,
+					interfaceTransitionId,
+				}),
 			{
 				type,
 				sessionId: this.sessionId,
 				conversationId: String(this.conversation.conversationId ?? ""),
+				interfaceTransitionId: String(
+					(this.transitionStatus.transition as JsonObject | undefined)?.id ?? "",
+				),
 			},
 		);
 	}

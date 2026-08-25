@@ -99,7 +99,7 @@ startup errors, zero matching tests, and missing evidence are infrastructure
 failures rather than captured product failures.
 
 The Go lane is equally explicit: the runner consumes `go test -json` output and
-requires start plus terminal results for both named tagged contracts in an
+requires start plus terminal results for every named tagged contract in an
 unfiltered run, or each mapped contract selected by `--grep`. A compile failure,
 zero-test match, skipped test, or interrupted/incomplete test is an infrastructure
 failure even if capture mode was requested.
@@ -114,7 +114,7 @@ directly:
 
 ```bash
 cd backend
-go test -tags chatui_regression ./internal/httpd/controllers ./internal/session_manager -count=1 -run TestChatUIRegression -v
+go test -tags chatui_regression ./internal/httpd/controllers ./internal/session_manager ./internal/service/chat -count=1 -run TestChatUIRegression -v
 ```
 
 ## Artifacts
@@ -174,7 +174,7 @@ is a second confidence check, not a replacement for the deterministic contract.
 | `MQA-03` | Packaged Electron/live | Deterministic disclosure contract | Agent-switch claims match durable semantic-handoff facts |
 | `MQA-04` | Deterministic | Packaged cold restart | Session drafts survive unmount, navigation, reload, and promised restart boundaries |
 | `MQA-05` | Deterministic | Packaged busy provider | Busy Chat shows a policy choice before any destructive interface-transition request |
-| `MQA-06` | Deterministic | Packaged Claude recovery canary | An unsettled fresh target is retried/recovered without poisoning the session |
+| `MQA-06` | Deterministic | Packaged Claude recovery canary | Legacy poisoned text stays closed on retry; explicit provider history recovers without bypassing trusted facts |
 | `MQA-07` | Deterministic | Optional packaged branch flow | Every advertised previous/next branch ID is activatable |
 | `MQA-08` | Packaged Electron/live | Deterministic imported-label contract | Imported successful terminal turns receive truthful completion labeling |
 | `MQA-09` | Deterministic | — | At-sign chips identify path references rather than embedded context |
@@ -193,10 +193,12 @@ during the audit: mounted context/quota signals and actionable credit-exhaustion
 detail. These are additional required checks, so a strict run remains red until
 they pass even when every `MQA-01` through `MQA-12` contract is green.
 
-The deterministic `MQA-06` contract injects unsettled history and checks retry
-convergence. Its live Claude canary remains a high-value confidence check because
-the original failure survived a native recovery turn, daemon/Electron restart, and
-identity refresh.
+The deterministic `MQA-06` contract seeds mismatched legacy user and assistant
+checkpoints, proves ordinary retry stays closed, exercises explicit provider-history
+recovery, rejects the same recovery for trusted/current facts, checks replay
+deduplication, and verifies the worktree is unchanged. Its live Claude canary
+remains a high-value confidence check because the original failure survived a
+native recovery turn, daemon/Electron restart, and identity refresh.
 Likewise, deterministic `MQA-12` verifies harness failure semantics while its
 supplemental canary answers whether the xterm race exists in the packaged app.
 

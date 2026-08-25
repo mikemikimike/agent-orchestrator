@@ -157,6 +157,10 @@ describe("focused contract lanes", () => {
 			}),
 			expect.objectContaining({
 				name: requiredGoContracts[3],
+				playwrightMarker: expect.stringContaining("MQA-06"),
+			}),
+			expect.objectContaining({
+				name: requiredGoContracts[4],
 				playwrightMarker: expect.stringContaining("MQA-08"),
 			}),
 		]);
