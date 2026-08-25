@@ -4,12 +4,18 @@ import { ActivityRow, TurnOutcome } from "./ChatTimelineItems";
 
 describe("TurnOutcome", () => {
 	it("describes a recovered historical turn as imported without inferring its outcome", () => {
-		render(<TurnOutcome state="recovered" />);
+		render(<TurnOutcome state="recovered" importedFromTerminal />);
 		expect(
 			screen.getByText("Imported from Terminal UI — completion status unavailable"),
 		).toBeInTheDocument();
 		expect(screen.queryByText("Outcome unknown")).not.toBeInTheDocument();
 		expect(screen.queryByText("Done")).not.toBeInTheDocument();
+	});
+
+	it("does not invent Terminal provenance for an ordinary recovered Chat turn", () => {
+		render(<TurnOutcome state="recovered" />);
+		expect(screen.getByText("Outcome unknown")).toBeInTheDocument();
+		expect(screen.queryByText(/Imported from Terminal UI/)).not.toBeInTheDocument();
 	});
 });
 

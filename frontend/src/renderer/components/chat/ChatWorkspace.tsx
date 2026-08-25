@@ -2014,6 +2014,7 @@ const TurnGroup = memo(function TurnGroup({
 				<TurnOutcome
 					state={group.outcome.state}
 					error={group.outcome.error}
+					importedFromTerminal={group.outcome.importedFromTerminal}
 					retry={group.outcome.state === "failed" ? retry : undefined}
 				/>
 			) : null}
@@ -2258,7 +2259,12 @@ type TimelineGroup = {
 	/** Where this group sits in the timeline: the lowest sequence it contains. */
 	anchor: number;
 	items: ConversationItem[];
-	outcome?: { state: "completed" | "recovered" | "interrupted" | "failed"; durationMs?: number; error?: string };
+	outcome?: {
+		state: "completed" | "recovered" | "interrupted" | "failed";
+		durationMs?: number;
+		error?: string;
+		importedFromTerminal?: boolean;
+	};
 	/** What the turn changed on disk, when the daemon reported anything. */
 	diff?: TurnDiff;
 	/** The agent's plan for this turn, when it made one. */
@@ -2425,6 +2431,7 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 		group.rollbackable = Boolean(turn.providerTurnId);
 		group.outcome = {
 			state: turn.state,
+			importedFromTerminal: turn.importedFromTerminal,
 			durationMs:
 				turn.completedAt && turn.startedAt
 					? new Date(turn.completedAt).getTime() - new Date(turn.startedAt).getTime()

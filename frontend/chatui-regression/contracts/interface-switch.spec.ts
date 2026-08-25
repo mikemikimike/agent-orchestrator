@@ -192,21 +192,55 @@ test.describe("ChatUI interface switching", () => {
 		test("uses a neutral imported-history label when completion metadata is unavailable", async ({ chatUI, page }) => {
 			chatUI.conversation = {
 				...chatUI.conversation,
-				latestSequence: 2,
+				latestSequence: 10,
 				oldestSequence: 1,
-				turns: [turn("turn-imported", "recovered", { providerTurnId: "native-turn-1" })],
+				turns: [
+					turn("turn-imported", "recovered", {
+						providerTurnId: "native-turn-1",
+						importedFromTerminal: true,
+					}),
+					turn("turn-completed", "completed", {
+						providerTurnId: "native-turn-2",
+						importedFromTerminal: true,
+					}),
+					turn("turn-interrupted", "interrupted", {
+						providerTurnId: "native-turn-3",
+						importedFromTerminal: true,
+					}),
+					turn("turn-failed", "failed", {
+						providerTurnId: "native-turn-4",
+						importedFromTerminal: true,
+						errorMessage: "Native task failed",
+					}),
+					turn("turn-chat-recovered", "recovered", { providerTurnId: "native-turn-5" }),
+				],
 				messages: [
 					message("message-imported-user", "turn-imported", 1, "user", "Run the native task"),
 					message("message-imported-assistant", "turn-imported", 2, "assistant", "Native task output imported"),
+					message("message-completed-user", "turn-completed", 3, "user", "Complete the native task"),
+					message("message-completed-assistant", "turn-completed", 4, "assistant", "Native completion retained"),
+					message("message-interrupted-user", "turn-interrupted", 5, "user", "Stop the native task"),
+					message("message-interrupted-assistant", "turn-interrupted", 6, "assistant", "Native interruption retained"),
+					message("message-failed-user", "turn-failed", 7, "user", "Fail the native task"),
+					message("message-failed-assistant", "turn-failed", 8, "assistant", "Native failure retained"),
+					message("message-chat-user", "turn-chat-recovered", 9, "user", "Resume the Chat task"),
+					message("message-chat-assistant", "turn-chat-recovered", 10, "assistant", "Chat recovery retained"),
 				],
 			};
 
 			await chatUI.open();
 
-			await expect.soft(
-				page.getByText("Imported from Terminal UI — completion status unavailable", { exact: true }),
-			).toBeVisible();
-			await expect.soft(page.getByText("Outcome unknown", { exact: true })).toHaveCount(0);
+			const terminalImportLabel = page.getByText(
+				"Imported from Terminal UI — completion status unavailable",
+				{ exact: true },
+			);
+			await expect.soft(terminalImportLabel).toBeVisible();
+			await expect.soft(terminalImportLabel).toHaveCount(1);
+			await expect.soft(page.getByText("Outcome unknown", { exact: true })).toHaveCount(1);
+			await expect.soft(page.getByText("Stopped", { exact: true })).toHaveCount(1);
+			await expect.soft(page.getByText("Failed", { exact: true })).toHaveCount(1);
+			await expect.soft(page.getByText("Native completion retained", { exact: true })).toBeVisible();
+			await terminalImportLabel.scrollIntoViewIfNeeded();
 		});
 	});
 });

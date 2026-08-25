@@ -2224,6 +2224,7 @@ export interface components {
             errorMessage?: string;
             hasRetryAttempt?: boolean;
             id: string;
+            importedFromTerminal?: boolean;
             plan?: components["schemas"]["ConversationPlanResponse"];
             providerTurnId?: string;
             requestedAt: string;

@@ -2236,22 +2236,26 @@ export interface TurnOutcomeRetryControl {
  * How a turn ended when it did not complete cleanly. Successful turns skip this —
  * their duration already sits on the answer action row. `interrupted` is kept
  * distinct from failed because the provider reports it that way. `recovered`
- * closes history imported from Terminal UI without claiming an outcome that the
- * provider did not report.
+ * means the provider supplied no portable outcome; provenance separately decides
+ * whether AO can truthfully call it a Terminal import.
  */
 export function TurnOutcome({
 	state,
 	error,
 	retry,
+	importedFromTerminal,
 }: {
 	state: "recovered" | "interrupted" | "failed";
 	error?: string;
+	importedFromTerminal?: boolean;
 	/** Re-dispatch this failed turn's prompt. Absent when retry is ineligible. */
 	retry?: TurnOutcomeRetryControl;
 }) {
 	const copy = {
 		recovered: {
-			label: "Imported from Terminal UI — completion status unavailable",
+			label: importedFromTerminal
+				? "Imported from Terminal UI — completion status unavailable"
+				: "Outcome unknown",
 			tone: "text-muted-foreground/70",
 		},
 		interrupted: { label: "Stopped", tone: "text-muted-foreground/70" },
