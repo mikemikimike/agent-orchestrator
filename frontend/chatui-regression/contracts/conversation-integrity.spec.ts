@@ -238,7 +238,9 @@ test.describe("ChatUI conversation integrity", () => {
 			await options.filter({ hasText: "backend/internal" }).click();
 
 			const token = composer.locator('[data-composer-token="file"]');
-			await token.focus();
+			await composer.focus();
+			await page.keyboard.press("Tab");
+			await expect(token).toBeFocused();
 			await expect(page.getByRole("tooltip")).toContainText(
 				"Path reference only: backend/internal/config.ts",
 			);

@@ -67,6 +67,8 @@ export interface WorkspaceFileCatalog {
 	failed: boolean;
 	error?: string;
 	refreshDegraded: boolean;
+	refreshFailed: boolean;
+	refreshError?: string;
 }
 
 const EMPTY_WORKSPACE_FILE_CATALOG: WorkspaceFileCatalog = {
@@ -74,6 +76,7 @@ const EMPTY_WORKSPACE_FILE_CATALOG: WorkspaceFileCatalog = {
 	truncated: false,
 	failed: false,
 	refreshDegraded: false,
+	refreshFailed: false,
 };
 
 /**
@@ -706,7 +709,19 @@ export function ChatComposer({
 							: t("chat.composer.fileReferencesLoadFailedFallback")}
 					</p>
 				) : null}
-				{trigger?.kind === "file" && !fileCatalog.failed && fileCatalog.refreshDegraded ? (
+				{trigger?.kind === "file" && !fileCatalog.failed && fileCatalog.refreshFailed ? (
+					<p role="status" className="px-1.5 text-[11px] leading-snug text-warning">
+						{fileCatalog.refreshError
+							? t("chat.composer.fileReferencesRefreshFailed", {
+									detail: fileCatalog.refreshError,
+								})
+							: t("chat.composer.fileReferencesRefreshFailedFallback")}
+					</p>
+				) : null}
+				{trigger?.kind === "file" &&
+				!fileCatalog.failed &&
+				!fileCatalog.refreshFailed &&
+				fileCatalog.refreshDegraded ? (
 					<p role="status" className="px-1.5 text-[11px] leading-snug text-warning">
 						{t("chat.composer.fileReferencesRefreshDegraded")}
 					</p>
