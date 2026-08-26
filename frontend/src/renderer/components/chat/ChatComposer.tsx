@@ -42,6 +42,7 @@ import {
 	type ReactNode,
 } from "react";
 import { ArrowUp, Command, CornerDownLeft, Loader2, Plus, Square, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { ComposerSuggestMenu } from "./ComposerSuggestMenu";
@@ -81,6 +82,7 @@ export function ChatComposer({
 	skills = [],
 	filePaths = [],
 	filePathsTruncated,
+	filePathsError,
 	onStageAttachments,
 	nativeImages,
 	onSteer,
@@ -114,6 +116,8 @@ export function ChatComposer({
 	filePaths?: string[];
 	/** The path list was capped, so the menu says so rather than implying it is all. */
 	filePathsTruncated?: boolean;
+	/** Why the worktree path catalog is unavailable. Shown when `@` is attempted. */
+	filePathsError?: string;
 	/**
 	 * Writes staged files into the worktree and answers with the paths the agent
 	 * can open. Absent means files cannot be delivered, and no attach control is
@@ -155,6 +159,7 @@ export function ChatComposer({
 	/** Whether this composer is currently visible and should take focus. */
 	autoFocus?: boolean;
 }) {
+	const { t } = useTranslation();
 	const [hasText, setHasText] = useState(false);
 	const hasTextRef = useRef(false);
 	const [trigger, setTrigger] = useState<ComposerTrigger>();
@@ -684,6 +689,12 @@ export function ChatComposer({
 					onKeyDown={onKeyDown}
 					onPaste={onPaste}
 				/>
+
+				{trigger?.kind === "file" && filePathsError ? (
+					<p role="alert" className="px-1.5 text-[11px] leading-snug text-destructive">
+						{t("chat.composer.fileReferencesLoadFailed", { detail: filePathsError })}
+					</p>
+				) : null}
 
 				{attachmentError ? (
 					<p role="alert" className="px-1.5 text-[11px] leading-snug text-destructive">
