@@ -679,6 +679,7 @@ export class ChatUIRegressionHarness {
 	}
 
 	async setMode(mode: "chat" | "tui"): Promise<void> {
+		this.options.mode = mode;
 		this.conversation.mode = mode;
 		this.transitionStatus.targetMode = mode === "chat" ? "tui" : "chat";
 		await this.page.evaluate(

@@ -373,8 +373,12 @@ test.describe("ChatUI interface switching", () => {
 				);
 				chatUI.releaseDeferredAttachmentResponse();
 				await (await attachmentResponse).finished();
-				await chatUI.setMode("chat");
+				await page.getByRole("button", { name: "Switch to chat UI" }).click();
+				await expect.poll(() => chatUI.requestsMatching("POST", "/interface-transition").length).toBe(2);
+				await chatUI.completeInterfaceTransition();
 				await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
+				await expect(page.getByTestId("chat-conversation-panel")).not.toHaveAttribute("inert", "");
+				await expect(page.getByRole("combobox", { name: "Message the agent" })).toBeEditable();
 				await expect(page.getByRole("button", { name: "Remove discarded-late.png" })).toHaveCount(0);
 				const draftKey = `ao.chat.draft:${encodeURIComponent(chatUI.sessionId)}`;
 				await expect
