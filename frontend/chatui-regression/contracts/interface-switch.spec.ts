@@ -356,12 +356,24 @@ test.describe("ChatUI interface switching", () => {
 				await expect.poll(() => chatUI.requestsMatching("POST", "/interface-transition").length).toBe(1);
 				expect(confirmation).toContain("Attachments are still being saved");
 				await expect(page.getByRole("status").filter({ hasText: "Preparing switch" })).toBeVisible();
+				await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
 
-				chatUI.completeInterfaceTransition();
-				await expect(page.getByRole("button", { name: "Switch to terminal UI" })).toBeVisible();
+				await chatUI.completeInterfaceTransition();
+				await expect(page.getByRole("region", { name: "Chat" })).toHaveCount(0);
+				await expect(page.getByTestId("terminal-interaction-surface")).toBeVisible();
+				await expect(page.getByRole("button", { name: "Switch to chat UI" })).toBeVisible();
+				await expect(page.getByRole("status").filter({ hasText: "Preparing switch" })).toHaveCount(0);
 				await expect(page.getByText("Saving attachments… Wait before leaving this chat.")).toHaveCount(0);
 
+				const attachmentResponse = page.waitForResponse(
+					(response) =>
+						response.request().method() === "POST" &&
+						new URL(response.url()).pathname.endsWith("/attachments"),
+				);
 				chatUI.releaseDeferredAttachmentResponse();
+				await (await attachmentResponse).finished();
+				await chatUI.setMode("chat");
+				await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
 				await expect(page.getByRole("button", { name: "Remove discarded-late.png" })).toHaveCount(0);
 				const draftKey = `ao.chat.draft:${encodeURIComponent(chatUI.sessionId)}`;
 				await expect

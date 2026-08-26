@@ -598,21 +598,27 @@ export class ChatUIRegressionHarness {
 		this.releaseAttachmentResponse = undefined;
 	}
 
-	completeInterfaceTransition(): void {
+	async completeInterfaceTransition(): Promise<void> {
 		const transition = this.transitionStatus.transition;
 		if (!transition || typeof transition !== "object" || Array.isArray(transition)) {
 			throw new Error("no interface transition is available to complete");
+		}
+		const transitionRecord = transition as JsonObject;
+		const targetMode = transitionRecord.targetMode;
+		if (targetMode !== "chat" && targetMode !== "tui") {
+			throw new Error("interface transition has no valid target mode");
 		}
 		const completedAt = new Date().toISOString();
 		this.transitionStatus = {
 			...this.transitionStatus,
 			transition: {
-				...transition,
+				...transitionRecord,
 				phase: "completed",
 				updatedAt: completedAt,
 				completedAt,
 			},
 		};
+		await this.setMode(targetMode);
 	}
 
 	deferNextMessageResponse(): void {
