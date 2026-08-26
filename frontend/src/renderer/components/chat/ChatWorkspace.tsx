@@ -71,7 +71,7 @@ import {
 } from "./ChatTimelineItems";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider } from "./ChatMarkdown";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, type WorkspaceFileCatalog } from "./ChatComposer";
 import { ActivityRun } from "./ActivityRun";
 import { TurnPlan } from "./TurnPlan";
 import { TurnSettingsBar } from "./TurnSettingsBar";
@@ -256,12 +256,8 @@ export interface ChatWorkspaceProps {
 	activateBranchError?: string;
 	/** The provider's skills. Empty leaves `/` an ordinary character. */
 	skills?: ChatSkill[];
-	/** Worktree paths offered for `@`. */
-	filePaths?: string[];
-	/** The path list was capped by the daemon rather than being all of them. */
-	filePathsTruncated?: boolean;
-	/** Why the worktree path catalog is unavailable. */
-	filePathsError?: string;
+	/** Live worktree paths and their load/refresh state for `@` completion. */
+	fileCatalog?: WorkspaceFileCatalog;
 	/**
 	 * Writes staged images into the worktree and answers with the paths the agent
 	 * can open. Absent means no attach control is offered — the fixture preview has
@@ -345,9 +341,7 @@ export function ChatWorkspace({
 	activateBranchPending,
 	activateBranchError,
 	skills,
-	filePaths,
-	filePathsTruncated,
-	filePathsError,
+	fileCatalog,
 	onStageAttachments,
 	nativeImages,
 	onSteer,
@@ -843,9 +837,7 @@ export function ChatWorkspace({
 								willQueue={Boolean(turn)}
 								disabled={snapshot.controller.state === "stopped"}
 								skills={skills}
-								filePaths={filePaths}
-								filePathsTruncated={filePathsTruncated}
-								filePathsError={filePathsError}
+								fileCatalog={fileCatalog}
 								onStageAttachments={onStageAttachments}
 								nativeImages={nativeImages}
 								autoFocus={!reviewerActive}

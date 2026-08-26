@@ -221,5 +221,27 @@ test.describe("ChatUI conversation integrity", () => {
 			await expect(page.getByRole("option", { name: /new-file\.ts/ })).toBeVisible();
 			await expect(page.getByRole("option", { name: /legacy-file\.ts/ })).toHaveCount(0);
 		});
+
+		test("shows the selected duplicate path on keyboard focus", async ({ chatUI, page }) => {
+			chatUI.workspaceFiles = [
+				{ path: "frontend/src/config.ts", status: "modified" },
+				{ path: "backend/internal/config.ts", status: "modified" },
+			];
+			await chatUI.open();
+
+			const composer = page.getByRole("combobox", { name: "Message the agent" });
+			await composer.fill("@config");
+			const options = page.getByRole("option");
+			await expect(options).toHaveCount(2);
+			await expect(options.filter({ hasText: "frontend/src" })).toBeVisible();
+			await expect(options.filter({ hasText: "backend/internal" })).toBeVisible();
+			await options.filter({ hasText: "backend/internal" }).click();
+
+			const token = composer.locator('[data-composer-token="file"]');
+			await token.focus();
+			await expect(page.getByRole("tooltip")).toContainText(
+				"Path reference only: backend/internal/config.ts",
+			);
+		});
 	});
 });
