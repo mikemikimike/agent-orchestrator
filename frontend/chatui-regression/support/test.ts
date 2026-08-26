@@ -598,6 +598,23 @@ export class ChatUIRegressionHarness {
 		this.releaseAttachmentResponse = undefined;
 	}
 
+	completeInterfaceTransition(): void {
+		const transition = this.transitionStatus.transition;
+		if (!transition || typeof transition !== "object" || Array.isArray(transition)) {
+			throw new Error("no interface transition is available to complete");
+		}
+		const completedAt = new Date().toISOString();
+		this.transitionStatus = {
+			...this.transitionStatus,
+			transition: {
+				...transition,
+				phase: "completed",
+				updatedAt: completedAt,
+				completedAt,
+			},
+		};
+	}
+
 	deferNextMessageResponse(): void {
 		this.deferredMessageResponse = new Promise<void>((resolve) => {
 			this.releaseMessageResponse = resolve;

@@ -355,6 +355,11 @@ test.describe("ChatUI interface switching", () => {
 				await page.getByRole("button", { name: "Switch to terminal UI" }).click();
 				await expect.poll(() => chatUI.requestsMatching("POST", "/interface-transition").length).toBe(1);
 				expect(confirmation).toContain("Attachments are still being saved");
+				await expect(page.getByRole("status").filter({ hasText: "Preparing switch" })).toBeVisible();
+
+				chatUI.completeInterfaceTransition();
+				await expect(page.getByRole("button", { name: "Switch to terminal UI" })).toBeVisible();
+				await expect(page.getByText("Saving attachments… Wait before leaving this chat.")).toHaveCount(0);
 
 				chatUI.releaseDeferredAttachmentResponse();
 				await expect(page.getByRole("button", { name: "Remove discarded-late.png" })).toHaveCount(0);
