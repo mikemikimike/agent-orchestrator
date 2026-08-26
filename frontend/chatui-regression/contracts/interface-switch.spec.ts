@@ -357,6 +357,7 @@ test.describe("ChatUI interface switching", () => {
 				expect(confirmation).toContain("Attachments are still being saved");
 				await expect(page.getByRole("status").filter({ hasText: "Preparing switch" })).toBeVisible();
 				await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
+				await expect(page.getByTestId("chat-conversation-panel")).toHaveAttribute("inert", "");
 
 				await chatUI.completeInterfaceTransition();
 				await expect(page.getByRole("region", { name: "Chat" })).toHaveCount(0);
